@@ -5,6 +5,7 @@ import { Audio as GameAudio } from './audio/audio';
 import { Ledger } from './ui/ledger';
 import { Screens } from './ui/screens';
 import { cycleGore, cycleLineNumbers, loadSettings, saveSettings } from './ui/settings';
+import { TUTORIAL } from './sim/tutorial';
 
 const canvas = document.getElementById('screen') as HTMLCanvasElement;
 
@@ -130,6 +131,9 @@ function frame(now: number): void {
     renderer.overlay(PALETTE.bg, 0.55);
     screens.drawTitle(renderer, now);
   } else {
+    // A warm-up step that teaches `{n}G` needs the n visible next to each lane.
+    const step = state.phase === 'playing' && state.sim.tutorial >= 0 ? TUTORIAL[state.sim.tutorial] : undefined;
+    renderer.lineNumbers = step?.absoluteGutter && settings.lineNumbers !== 'off' ? 'absolute' : settings.lineNumbers;
     renderer.drawGame(state);
     if (state.phase === 'playing' && state.sim.tutorial >= 0) screens.drawTutorial(renderer, state);
     else if (state.phase === 'playing' && state.sim.breather > 0) screens.drawWaveCard(renderer, state);

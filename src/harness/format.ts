@@ -25,7 +25,8 @@ const CHARGES_NOTE =
   ' Moving is always free: move precisely, then cut.';
 
 const FIELD_NOTE =
-  `FIELD  ${ROWS} lanes (rows), columns 0..${FIELD_COLS - 1}. Zombies enter at column 0 and walk EAST.` +
+  `FIELD  ${ROWS} lanes numbered 1..${ROWS} top to bottom (1-based, like Vim lines: 7G goes to lane 7),` +
+  ` columns 0..${FIELD_COLS - 1}. Zombies enter at column 0 and walk EAST.` +
   ` The barricade stands at column ${BARRICADE_COL}; the glyph after each lane is that lane's section` +
   " of wall (# intact, then = - . and blank for a breach). You are behind it.";
 
@@ -75,14 +76,14 @@ export function renderText(state: GameState, pending: string): string {
   const caret = PREFIX + ' '.repeat(Math.max(0, s.cursor.col)) + '^';
   for (let r = 0; r < ROWS; r++) {
     const line = (s.buffer.rows[r] ?? '').padEnd(FIELD_COLS, ' ');
-    out.push(`lane ${pad(r, 2)} ${line}${wall[r] ?? ' '}`);
+    out.push(`lane ${pad(r + 1, 2)} ${line}${wall[r] ?? ' '}`);
     if (r === s.cursor.row) out.push(caret);
   }
 
   const zs = s.buffer.zombies.slice().sort((a, b) => (a.row - b.row) || (a.col - b.col));
   out.push('ZOMBIES  lane col kind     cols_to_wall  text');
   for (const z of zs) {
-    out.push(`        ${pad(z.row, 4)}${pad(z.col, 4)} ${z.kind.padEnd(8, ' ')} ` +
+    out.push(`        ${pad(z.row + 1, 4)}${pad(z.col, 4)} ${z.kind.padEnd(8, ' ')} ` +
       `${pad(BARRICADE_COL - (z.col + z.text.length), 12)}  ${z.text}`);
   }
   if (zs.length === 0) out.push('        (none on the field)');
@@ -92,7 +93,7 @@ export function renderText(state: GameState, pending: string): string {
     if (!nearest || z.col + z.text.length > nearest.col + nearest.text.length) nearest = z;
   }
   if (nearest) {
-    out.push(`NEAREST lane ${nearest.row} col ${nearest.col} ${nearest.kind} "${nearest.text}"` +
+    out.push(`NEAREST lane ${nearest.row + 1} col ${nearest.col} ${nearest.kind} "${nearest.text}"` +
       `  cols_to_wall ${BARRICADE_COL - (nearest.col + nearest.text.length)}`);
   }
 
@@ -101,7 +102,7 @@ export function renderText(state: GameState, pending: string): string {
   const onDesc = on
     ? `"${on.text}" ${on.kind} col ${on.col}..${on.col + on.text.length - 1}${locked}`
     : '<empty>';
-  out.push(`CURSOR lane ${s.cursor.row} col ${s.cursor.col}  (on: ${onDesc})`);
+  out.push(`CURSOR lane ${s.cursor.row + 1} col ${s.cursor.col}  (on: ${onDesc})`);
   if (s.phase === 'dead') {
     out.push(`GAME OVER  wave ${s.wave}  score ${s.score}  longest combo ${sm.longestCombo}` +
       `  kills ${sm.kills}  keystrokes ${sm.keystrokes}`);

@@ -13,6 +13,9 @@ export interface TutorialStep {
   spawn: TutorialSpawn[];
   /** reach = get the crosshair onto a zombie. clear = kill them all. */
   goal: 'reach' | 'clear';
+  /** Show 1-based absolute lane numbers in the gutter, whatever the player's
+   *  setting: `{n}G` only makes sense when the n is printed next to the lane. */
+  absoluteGutter?: true;
 }
 
 export const TUTORIAL: TutorialStep[] = [
@@ -40,9 +43,10 @@ export const TUTORIAL: TutorialStep[] = [
   {
     title: 'Pick your lane',
     keys: ['7', 'G'],
-    hint: '7G jumps to lane 6 and its first zombie.',
+    hint: '7G jumps to lane 7, onto its first zombie.',
     spawn: [['walker', 2, 12, 'gore', 0], ['walker', 6, 20, 'bile', 0], ['walker', 12, 8, 'rot', 0]],
     goal: 'clear',
+    absoluteGutter: true,
   },
   {
     title: 'One character',

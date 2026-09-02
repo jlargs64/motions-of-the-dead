@@ -31,7 +31,7 @@ describe('text() surface', () => {
   it('marks the cursor lane with a caret', () => {
     const lines = t.split('\n');
     const cur = g.json().cursor;
-    const i = lines.findIndex((l) => l.startsWith(`lane ${String(cur.row).padStart(2, ' ')} `));
+    const i = lines.findIndex((l) => l.startsWith(`lane ${String(cur.row + 1).padStart(2, ' ')} `));
     expect(i).toBeGreaterThan(-1);
     expect(lines[i + 1]).toBe(' '.repeat(8 + cur.col) + '^');
   });
@@ -42,6 +42,14 @@ describe('text() surface', () => {
   });
   it('reports the cursor and what is under it', () => {
     expect(t).toMatch(/\nCURSOR lane \d+ col \d+  \(on: /);
+  });
+  it('numbers lanes 1-based so {n}G agrees with the printout', () => {
+    const h = new Game(1);
+    h.keys('7G');
+    expect(h.json().cursor.row).toBe(6);
+    expect(h.text()).toMatch(/\nCURSOR lane 7 col /);
+    expect(h.text()).toMatch(/^lane  1 /m);
+    expect(h.text()).not.toMatch(/^lane  0 /m);
   });
   it('shows the pending command buffer', () => {
     const h = new Game(1);
