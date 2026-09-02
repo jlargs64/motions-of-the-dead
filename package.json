@@ -1,0 +1,31 @@
+{
+  "name": "motions-of-the-dead",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "play": "tsx src/harness/cli.ts",
+    "smoke": "tsx scripts/agent-smoke.ts",
+    "replay": "tsx scripts/replay.ts",
+    "verify:browser": "tsx scripts/browser-replay.mts",
+    "verify": "npm test && npm run build && npm run smoke && npm run smoke:render && npm run replay && npm run verify:browser",
+    "smoke:render": "tsx scripts/render-smoke.mts"
+  },
+  "devDependencies": {
+    "@types/node": "^26.4.1",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.5",
+    "vitest": "^2.1.8"
+  },
+  "allowScripts": {
+    "esbuild@0.28.2": true,
+    "esbuild@0.21.5": true,
+    "esbuild@0.25.12": true
+  }
+}
