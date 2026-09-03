@@ -18,6 +18,9 @@ export const PALETTE: {
   skyTop: string; skyHorizon: string; fog: string; tree: string;
   fieldFar: string; fieldNear: string; fieldDeep: string;
   bloodDry: string; paving: string;
+  /** the floodlight: lamp core, warm cone, and the darkness it leaves west */
+  light: string; lightWarm: string; shadowWest: string;
+  houseWall: string; houseWallDark: string; window: string; rust: string; chain: string;
   // --- barricade ------------------------------------------------------------
   timber: string; timberShadow: string; timberHi: string;
   wire: string; sandbag: string; void_: string;
@@ -47,6 +50,15 @@ export const PALETTE: {
   fieldDeep: '#222c28',
   bloodDry: '#5a1a18',
   paving: '#3a3d42',
+
+  light: '#f2e6be',
+  lightWarm: '#cdb277',
+  shadowWest: '#04060a',
+  houseWall: '#1c1f26',
+  houseWallDark: '#12141a',
+  window: '#d9b25c',
+  rust: '#5a3a24',
+  chain: '#6d7379',
 
   timber: '#4a4034',
   timberShadow: '#2a241d',
@@ -133,9 +145,9 @@ export const CHUNK_TONES: readonly string[] = [
 
 /** Pre-baked rgba() strings. Nothing in a hot path may build one. */
 export const RGBA = {
-  scrim: 'rgba(13, 17, 23, 0.62)',
+  scrim: 'rgba(13, 17, 23, 0.70)',
   scrimSoft: 'rgba(13, 17, 23, 0.30)',
-  scrimBloater: 'rgba(13, 17, 23, 0.76)',
+  scrimBloater: 'rgba(13, 17, 23, 0.80)',
   laneLight: 'rgba(210, 224, 214, 0.030)',
   laneDark: 'rgba(0, 0, 0, 0.055)',
   laneCursor: 'rgba(224, 160, 32, 0.055)',
@@ -144,6 +156,8 @@ export const RGBA = {
   hudBed: 'rgba(13, 17, 23, 0.34)',
   hudWhite: 'rgba(232, 232, 224, 0.80)',
   hudWhiteDim: 'rgba(232, 232, 224, 0.45)',
+  hudTrack: 'rgba(13, 17, 23, 0.55)',
+  hudCrack: 'rgba(0, 0, 0, 0.45)',
   showcmdBed: 'rgba(13, 17, 23, 0.46)',
   figureShadow: 'rgba(0, 0, 0, 0.34)',
   pauseWash: 'rgba(43, 52, 70, 0.52)',
@@ -154,3 +168,34 @@ export const RGBA = {
   wireGlint: 'rgba(200, 206, 210, 0.35)',
   breachGlow: 'rgba(209, 26, 26, 0.16)',
 } as const;
+
+// --- figure shading ramps ----------------------------------------------------
+// The floodlight is the only light source. Figures pick a step from these by
+// `lightAt[col]` (see renderer.ts) — 6 steps, index 0 is the unlit west edge.
+// Baked at load so the draw loop never mixes a colour.
+export const SHADE_STEPS = 6;
+
+function hex(c: string): [number, number, number] {
+  return [parseInt(c.slice(1, 3), 16), parseInt(c.slice(3, 5), 16), parseInt(c.slice(5, 7), 16)];
+}
+function mix(a: string, b: string, t: number): string {
+  const [ar, ag, ab] = hex(a); const [br, bg, bb] = hex(b);
+  const r = Math.round(ar + (br - ar) * t), g = Math.round(ag + (bg - ag) * t), bl = Math.round(ab + (bb - ab) * t);
+  return '#' + ((1 << 24) | (r << 16) | (g << 8) | bl).toString(16).slice(1);
+}
+function ramp(dark: string, lit: string, gamma = 1): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < SHADE_STEPS; i++) out.push(mix(dark, lit, Math.pow(i / (SHADE_STEPS - 1), gamma)));
+  return out;
+}
+
+/** silhouette body: near-black in the dark, a dull coat colour in the light */
+export const FIG_BODY: readonly string[] = ramp('#0a0c10', '#3a424a', 1.3);
+/** the east rim, where the lamp catches the figure */
+export const FIG_RIM: readonly string[] = ramp('#1a1d22', '#b9a67a', 1.1);
+/** exposed skin */
+export const FIG_SKIN: readonly string[] = ramp('#1e2320', PALETTE.zSkin, 1.2);
+/** blood on the figure */
+export const FIG_BLOOD: readonly string[] = ramp('#1a0606', PALETTE.zBlood, 1.0);
+/** the armoured plate; stays recognisably the bracket green at every step */
+export const FIG_PLATE: readonly string[] = ramp('#1d3019', PALETTE.green, 0.8);

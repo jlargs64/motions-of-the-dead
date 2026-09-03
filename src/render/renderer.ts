@@ -2,12 +2,13 @@
 // Phase C — Renderer + FX. The only entry point other phases import.
 //
 // Art direction: *The Last Stand* (Con Artist Games, 2007). A wide nocturnal
-// exterior. Slate sky, black conifer treeline, dishwater fog on the horizon,
-// cold blue-green grass trodden with dried blood. A filthy timber barricade
-// stands vertically at column 52; the survivor holds the paving behind it and
-// aims left, downrange, at wherever your cursor is. The horde shambles in from
-// column 0 — each zombie is a small figure with its word floating above its
-// head like a nametag. You kill by editing the words.
+// exterior lit by one floodlight on a post beside the house. Slate sky, black
+// conifer treeline, fog on the horizon, trodden grass that falls into darkness
+// at the west edge where the horde comes from. A junk-heap barricade — planks,
+// a car door, a fridge, tyres, chain-link, sandbags — spans columns 50..55; the
+// survivor stands on a pallet behind it and aims left, downrange, at wherever
+// your cursor is. Each zombie is a tall hunched silhouette with its word
+// floating above its head like a nametag. You kill by editing the words.
 //
 // The renderer is strictly downstream: it reads GameState and subscribes to the
 // bus. It never imports the sim and never mutates state.
@@ -28,7 +29,7 @@ import { GlyphAtlas, fontString } from './glyphs';
 import { ChunkAtlas, CHUNK_ROTS, CHUNK_SHAPES, FlashSprite } from './chunks';
 import { K_CHUNK, K_GLYPH, P_BLEEDS, P_GHOST, P_STICK, Particles } from './particles';
 import {
-  BAND_BOTTOM, BAND_TOP, GoreLayer, Scene,
+  BAND_BOTTOM, BAND_TOP, GoreLayer, Scene, lightFalloff,
 } from './scene';
 import type { SceneGeo } from './scene';
 import {
@@ -50,7 +51,6 @@ export interface Metrics {
 
 // --- layout ------------------------------------------------------------------
 const TOTAL_ROWS = ROWS + BAND_TOP + BAND_BOTTOM;   // 26
-const GUTTER_SCRIM = 'rgba(13, 17, 23, 0.62)';
 /** width : height of one cell. Wider than a terminal — this is a scene. */
 const CELL_ASPECT = 0.58;
 const MAX_DPR = 2;
@@ -59,15 +59,25 @@ const MAX_ATLAS_PX = 8_000_000;
 /** deterministic seed for the scene bake; identical every run */
 const SCENE_SEED = 0xb10d5ce7;
 
-/** the barricade occupies these columns, in cell units */
-const WALL_X0 = 51.85;
-const WALL_X1 = 54.15;
+/** the barricade heap occupies these columns, in cell units */
+const WALL_X0 = 50.0;
+const WALL_X1 = 55.0;
 /** the survivor */
-const SURV_COL = 56.0;
-const SURV_FEET_ROW = 11.7;
+const SURV_COL = 55.6;
+const SURV_FEET_ROW = 12.2;
 
 /** a figure's head top sits this far below its word row, in cells */
 const FIG_HEAD_GAP = 1.05;
+
+/** HUD: top-left status block in the sky band, and the top-edge strip */
+const HUD_COL = 0.6;
+const HUD_ROW = -5.5;
+const HUD_BAR_COLS = 10;
+const STRIP_COL0 = 16;
+const STRIP_COL1 = 44;
+const STRIP_ROW = -5.75;
+/** the combo counter's left edge; it grows upward from row -2.6 */
+const COMBO_COL = 46;
 
 // --- feel --------------------------------------------------------------------
 /** words start jittering this many columns from the wall */
@@ -76,6 +86,10 @@ const FLICKER_THR = new Uint8Array([4, 7, 11, 16, 22, 30, 40, 52]); // /128
 const NOISE = '%#@$&*?!';
 const NOISE_CODES = new Uint16Array(NOISE.length);
 for (let i = 0; i < NOISE.length; i++) NOISE_CODES[i] = NOISE.charCodeAt(i);
+
+/** muzzle flash: extra shade on figures within this many columns of the shot */
+const MUZZLE_REACH = 6;
+const MUZZLE_BOOST = 0.6;
 
 const GRAVITY = 46;        // cells / s^2
 const SHAKE_UNIT = 0.07;   // cell-heights per unit of Fx.shake
@@ -90,7 +104,39 @@ WALL_LEVEL_OF[61] = 3;  // '='
 WALL_LEVEL_OF[45] = 2;  // '-'
 WALL_LEVEL_OF[46] = 1;  // '.'
 WALL_LEVEL_OF[32] = 0;  // ' '
-const PLANK_FRAC = new Float32Array([0, 0.34, 0.60, 0.84, 1.0]);
+
+// --- the plank table -------------------------------------------------------------
+// 16 lanes x 3 leaning planks, laid out once from hash3 so the heap is the same
+// every frame and every run. Fractions of the wall width / lane height; the
+// angle is pre-resolved to cos/sin so the draw loop does no trig.
+const PLANKS_PER_LANE = 3;
+const PLANK_N = ROWS * PLANKS_PER_LANE;
+const PLANK_CX = new Float32Array(PLANK_N);
+const PLANK_CY = new Float32Array(PLANK_N);
+const PLANK_LEN = new Float32Array(PLANK_N);
+const PLANK_TH = new Float32Array(PLANK_N);
+const PLANK_COS = new Float32Array(PLANK_N);
+const PLANK_SIN = new Float32Array(PLANK_N);
+const PLANK_TONE = new Uint8Array(PLANK_N);
+const PLANK_TONES = ['#4a4034', '#5a4d3d', '#3e3529', '#514332'];
+for (let r = 0; r < ROWS; r++) {
+  for (let i = 0; i < PLANKS_PER_LANE; i++) {
+    const k = r * PLANKS_PER_LANE + i;
+    const h = hash3(r, i, 0x9e);
+    PLANK_CX[k] = 0.30 + i * 0.22 + ((h & 255) / 255 - 0.5) * 0.14;
+    PLANK_CY[k] = 0.5 + (((h >>> 8) & 255) / 255 - 0.5) * 0.5;
+    PLANK_LEN[k] = 0.50 + ((h >>> 16) & 255) / 255 * 0.30;
+    PLANK_TH[k] = 0.24 + ((h >>> 24) & 15) / 15 * 0.14;
+    const ang = (((h >>> 4) & 255) / 255 - 0.5) * 2 * (18 * Math.PI / 180);
+    PLANK_COS[k] = Math.cos(ang);
+    PLANK_SIN[k] = Math.sin(ang);
+    PLANK_TONE[k] = (h >>> 12) & 3;
+  }
+}
+const PROP_CHAIN = 0;
+const PROP_DOOR = 1;
+const PROP_FRIDGE = 2;
+const PROP_TYRES = 3;
 
 // bracket / quote char codes, compared numerically so nothing is allocated
 function isOpenCode(c: number): boolean {
@@ -159,19 +205,24 @@ export class Renderer {
 
   private lastCursorRow = 0;
   private frontLane = ROWS - 1;
+  /** floodlight brightness per column, 0..1; figures pick their shade from it */
+  private lightAt = new Float32Array(COLS);
   private gunX = 0;
   private gunY = 0;
   private aimOut = new Float64Array(2);
 
   // cached strings — rebuilt only when an underlying value changes
   private hpStr = '0';
-  private chargeStr = '';
+  private ddStr = '';
+  private dStr = '';
   private waveStr = '';
   private comboStr = '';
   private hHp = -1; private hDd = -1; private hD = -1;
   private hWave = -1; private hCombo = -1;
   private wallGlyphs = '';
   private wallHp = -1;
+  /** per-lane wall level 4..0, decoded from wallGlyphs each frame */
+  private wallLevels = new Uint8Array(ROWS);
   private lastPanelPaper = false;
 
   constructor(canvas: HTMLCanvasElement, bus: Bus) {
@@ -221,8 +272,8 @@ export class Renderer {
       this.fx.addShake(1.5 + Math.min(e.dmg, 20) * 0.25);
       const lane = this.frontLane;
       if (this.gore !== 'off') {
-        this.goreLayer.add(51, lane, 0.5);
-        this.goreLayer.add(50, lane, 0.3);
+        this.goreLayer.add(50, lane, 0.5);
+        this.goreLayer.add(49, lane, 0.3);
         const v = this.wallGore[lane] + 0.18;
         this.wallGore[lane] = v > 1 ? 1 : v;
       }
@@ -291,6 +342,7 @@ export class Renderer {
     g.w = vw; g.h = vh; g.cw = cw; g.ch = ch; g.ox = m.ox; g.oy = m.oy;
     g.cols = COLS; g.rows = ROWS;
     this.sceneDirty = true;
+    for (let c = 0; c < COLS; c++) this.lightAt[c] = lightFalloff(c);
     this.goreLayer.rebuild(g, this.dpr);
 
     const vg = this.ctx.createRadialGradient(
@@ -383,7 +435,7 @@ export class Renderer {
     }
 
     this.drawGutter(state);
-    this.drawHud(state);
+    if (state.phase !== 'title') this.drawHud(state);
     this.showcmd(this.pendingCmd);
     this.drawOverkill();
   }
@@ -417,8 +469,11 @@ export class Renderer {
   private drawFigures(zs: readonly Zombie[], simTime: number): void {
     const ctx = this.ctx;
     const m = this.m;
+    const fx = this.fx;
     const bloody = this.gore !== 'off';
     const tick = (simTime / GAIT_MS) | 0;
+    // the muzzle flash throws light onto whoever is near the shot for 60ms
+    const boost = fx.muzzle > 0 ? (fx.muzzle / MUZZLE_MS) * MUZZLE_BOOST : 0;
     for (let r = 0; r < ROWS; r++) {
       for (let i = 0; i < zs.length; i++) {
         const z = zs[i];
@@ -426,7 +481,8 @@ export class Renderer {
         const n = z.text.length;
         if (z.col + n <= 0 || z.col >= FIELD_COLS) continue;
         const k = figureKind(z.kind, n);
-        const cxp = m.ox + (z.col + n * 0.5) * m.cw;
+        const centre = z.col + n * 0.5;
+        const cxp = m.ox + centre * m.cw;
         const feetY = m.oy + (r + FIG_HEAD_GAP + figureHeightCells(k)) * m.ch;
         const dist = BARRICADE_COL - (z.col + n);
         const twitch = dist >= FLICKER_DIST ? 0 : (FLICKER_DIST - dist) / FLICKER_DIST;
@@ -434,9 +490,32 @@ export class Renderer {
         const step = (tick * rate + z.id * 3) & 3;
         const h = hash3(z.id, this.frame >> 1, 0x2b);
         const jitter = ((h & 255) / 127.5) - 1;
-        drawZombie(ctx, cxp, feetY, m.ch, k, step, twitch, jitter, bloody);
+        let ci = (centre + 0.5) | 0;
+        if (ci < 0) ci = 0; else if (ci >= COLS) ci = COLS - 1;
+        let shade = this.lightAt[ci];
+        if (boost > 0 && this.litByShot(r, centre)) {
+          shade += boost;
+          if (shade > 1) shade = 1;
+        }
+        drawZombie(ctx, cxp, feetY, m.ch, k, step, twitch, jitter, bloody, shade, z.id);
       }
     }
+  }
+
+  /** Is a figure at (row, col) inside the muzzle flash of a live shot? Near
+   *  end of the covered span is the end closest to the gun. */
+  private litByShot(row: number, col: number): boolean {
+    const fx = this.fx;
+    for (let i = 0; i < fx.shotCount; i++) {
+      if (fx.shotAge[i] >= MUZZLE_MS) continue;
+      const dr = row - fx.shotRow[i];
+      if (dr > 1 || dr < -1) continue;
+      const c0 = fx.shotC0[i], c1 = fx.shotC1[i];
+      const near = c0 > c1 ? c0 : c1;
+      const dc = col - near;
+      if (dc <= MUZZLE_REACH && dc >= -MUZZLE_REACH) return true;
+    }
+    return false;
   }
 
   /** Words last, on their scrim, so they are always the crispest thing here.
@@ -517,6 +596,12 @@ export class Renderer {
 
   // -- the barricade ---------------------------------------------------------
 
+  /**
+   * The heap. Per lane, 2..3 leaning planks from the module-level plank table
+   * plus one large prop per group of lanes; the wall level 4..0 from
+   * `barricadeGlyphs` decides how much of it is still standing. Everything is
+   * keyed on (lane, index) so the heap is identical every frame for a given HP.
+   */
   private drawBarricade(state: GameState): void {
     const m = this.m;
     const ctx = this.ctx;
@@ -532,53 +617,64 @@ export class Renderer {
     const w = x1 - x0;
     const top = m.oy;
 
-    // the dark behind the wall — every gap opens onto this
+    // the dark behind the heap — every gap opens onto this
     ctx.fillStyle = PALETTE.void_;
-    ctx.fillRect(x0, top, w, ROWS * m.ch);
+    ctx.fillRect(x0 + w * 0.10, top, w * 0.90, ROWS * m.ch);
 
-    const shH = Math.max(1, m.ch * 0.14);
+    // the upright the wire is strung on, east side, full height
+    ctx.fillStyle = PALETTE.timberShadow;
+    ctx.fillRect(x1 - w * 0.26, top - m.ch * 0.4, Math.max(2, m.cw * 0.32), ROWS * m.ch + m.ch * 0.4);
+    ctx.fillStyle = 'rgba(107,93,74,0.30)';
+    ctx.fillRect(x1 - w * 0.26, top - m.ch * 0.4, Math.max(1, m.cw * 0.10), ROWS * m.ch + m.ch * 0.4);
+
+    // levels per lane, reused by the props
+    const lv = this.wallLevels;
     for (let r = 0; r < ROWS; r++) {
       const code = r < g.length ? g.charCodeAt(r) : 32;
-      const lvl = code < 128 ? WALL_LEVEL_OF[code] : 4;
+      lv[r] = code < 128 ? WALL_LEVEL_OF[code] : 4;
+    }
+
+    // planks
+    for (let r = 0; r < ROWS; r++) {
+      const lvl = lv[r];
       const y = top + r * m.ch;
       if (lvl === 0) {
-        // breach: a hole. Splintered plank ends at either side, nothing between.
+        // breach: a hole. Splintered plank ends at either side, a fallen plank
+        // on the ground, and a faint red glow on the west lip to pull the eye.
         ctx.fillStyle = PALETTE.timberShadow;
-        ctx.fillRect(x0, y, w * 0.12, m.ch * 0.34);
-        ctx.fillRect(x1 - w * 0.10, y + m.ch * 0.5, w * 0.10, m.ch * 0.3);
+        ctx.fillRect(x0 + w * 0.10, y + m.ch * 0.2, w * 0.14, m.ch * 0.30);
+        ctx.fillRect(x1 - w * 0.36, y + m.ch * 0.55, w * 0.10, m.ch * 0.26);
+        this.plank(r, 0, x0, y + m.ch * 0.55, w, m.ch, 0.6);
         ctx.fillStyle = RGBA.breachGlow;
-        ctx.fillRect(x0, y, w, m.ch);
+        ctx.fillRect(x0 + w * 0.10, y, w * 0.30, m.ch);
         continue;
       }
-      const pw = w * PLANK_FRAC[lvl];
-      // body + shadow + highlight
-      ctx.fillStyle = PALETTE.timber;
-      ctx.fillRect(x0, y, pw, m.ch - shH);
-      ctx.fillStyle = PALETTE.timberShadow;
-      ctx.fillRect(x0, y + m.ch - shH, pw, shH);
-      ctx.fillStyle = PALETTE.timberHi;
-      ctx.fillRect(x0, y, pw, Math.max(1, m.ch * 0.07));
-      // grain
-      ctx.fillStyle = 'rgba(0,0,0,0.16)';
-      const hgr = hash3(r, 7, 3);
-      ctx.fillRect(x0 + pw * (0.18 + (hgr & 63) / 512), y + m.ch * 0.42,
-        pw * 0.55, Math.max(1, m.ch * 0.04));
-      if (lvl < 4) {
-        // splintered ragged right edge
+      const count = lvl === 4 ? 3 : lvl === 1 ? 1 : 2;
+      for (let i = 0; i < count; i++) {
+        this.plank(r, i, x0, y, w, m.ch, lvl === 1 ? 0.45 : 1);
+      }
+      if (lvl <= 2) {
+        // splinters off the ragged west face
         ctx.fillStyle = PALETTE.timber;
-        for (let s = 0; s < 3; s++) {
-          const hs = hash3(r, s, 11);
-          const sy = y + (s + 0.15) * (m.ch / 3.4);
-          ctx.fillRect(x0 + pw, sy, w * 0.06 * ((hs & 15) / 15 + 0.3), m.ch * 0.16);
+        for (let sp = 0; sp < 3; sp++) {
+          const hs = hash3(r, sp, 11);
+          const sy = y + (sp + 0.15) * (m.ch / 3.4);
+          ctx.fillRect(x0 + w * (0.12 + ((hs >>> 4) & 7) * 0.02), sy,
+            w * 0.08 * ((hs & 15) / 15 + 0.3), m.ch * 0.14);
         }
       }
     }
 
-    this.drawPosts(x0, w, top);
-    this.drawSandbags(x0, top);
-    this.drawWire(x0, x1, top, g);
+    // props, one per lane group; a prop is as broken as its worst lane
+    this.prop(PROP_CHAIN, 0, 2, x0, w, top, lv);
+    this.prop(PROP_DOOR, 3, 5, x0, w, top, lv);
+    this.prop(PROP_FRIDGE, 8, 10, x0, w, top, lv);
+    this.prop(PROP_TYRES, 13, 15, x0, w, top, lv);
 
-    // caked blood at the foot of the wall, accumulated across the run
+    this.drawSandbags(x0, w, top);
+    this.drawWire(x0, x1, top, lv);
+
+    // caked blood at the foot of the heap, accumulated across the run
     if (this.gore !== 'off') {
       ctx.fillStyle = PALETTE.bloodDry;
       for (let r = 0; r < ROWS; r++) {
@@ -586,84 +682,161 @@ export class Renderer {
         if (v <= 0.01) continue;
         ctx.globalAlpha = Math.min(0.62, v * 0.62);
         ctx.beginPath();
-        ctx.ellipse(x0 + w * 0.34, top + (r + 0.72) * m.ch,
-          w * 0.55 + m.cw * 0.35, m.ch * (0.20 + v * 0.16), 0, 0, Math.PI * 2);
+        ctx.ellipse(x0 + w * 0.28, top + (r + 0.72) * m.ch,
+          w * 0.30 + m.cw * 0.35, m.ch * (0.20 + v * 0.16), 0, 0, Math.PI * 2);
         ctx.fill();
       }
       ctx.globalAlpha = 1;
     }
   }
 
-  private drawPosts(x0: number, w: number, top: number): void {
+  /** One leaning plank from the table: a filled quad and a lit top edge. */
+  private plank(r: number, i: number, x0: number, y: number, w: number, ch: number, lenScale: number): void {
+    const ctx = this.ctx;
+    const k = r * PLANKS_PER_LANE + i;
+    const cx = x0 + w * PLANK_CX[k];
+    const cy = y + ch * PLANK_CY[k];
+    const hx = w * PLANK_LEN[k] * 0.5 * lenScale;
+    const hy = ch * PLANK_TH[k] * 0.5;
+    const c = PLANK_COS[k], s = PLANK_SIN[k];
+    // corners: along the plank (±hx) and across it (±hy)
+    const ax = cx - hx * c + hy * s, ay = cy - hx * s - hy * c;   // top-west
+    const bx = cx + hx * c + hy * s, by = cy + hx * s - hy * c;   // top-east
+    const dx = cx + hx * c - hy * s, dy = cy + hx * s + hy * c;   // bottom-east
+    const ex = cx - hx * c - hy * s, ey = cy - hx * s + hy * c;   // bottom-west
+    ctx.fillStyle = PLANK_TONES[PLANK_TONE[k]];
+    ctx.beginPath();
+    ctx.moveTo(ax, ay); ctx.lineTo(bx, by); ctx.lineTo(dx, dy); ctx.lineTo(ex, ey);
+    ctx.closePath();
+    ctx.fill();
+    ctx.strokeStyle = PALETTE.timberHi;
+    ctx.lineWidth = Math.max(1, ch * 0.05);
+    ctx.beginPath();
+    ctx.moveTo(ax, ay); ctx.lineTo(bx, by);
+    ctx.stroke();
+  }
+
+  /** A large piece of junk spanning lanes r0..r1. Full at level >= 3, an
+   *  outline with the fill knocked out at level 2, gone below that. */
+  private prop(kind: number, r0: number, r1: number, x0: number, w: number, top: number, lv: Uint8Array): void {
+    let lvl = 4;
+    for (let r = r0; r <= r1; r++) if (lv[r] < lvl) lvl = lv[r];
+    if (lvl <= 1) return;
+    const outline = lvl === 2;
     const ctx = this.ctx;
     const m = this.m;
-    const h = ROWS * m.ch;
-    const pw = Math.max(1, m.cw * 0.30);
-    for (let p = 0; p < 3; p++) {
-      const base = x0 + w * (0.14 + p * 0.34);
-      const lean = (p === 1 ? -1 : 1) * m.cw * 0.35;
-      for (let r = 0; r < ROWS; r++) {
-        const f = r / ROWS;
-        const x = base + lean * (1 - f);
-        const y = top + r * m.ch;
-        ctx.fillStyle = p === 1 ? PALETTE.timberShadow : PALETTE.timber;
-        ctx.fillRect(x, y, pw, m.ch);
-        ctx.fillStyle = 'rgba(107,93,74,0.35)';
-        ctx.fillRect(x, y, Math.max(1, pw * 0.3), m.ch);
+    const y = top + r0 * m.ch;
+    const h = (r1 - r0 + 1) * m.ch;
+    ctx.lineWidth = Math.max(1, m.ch * 0.06);
+    if (kind === PROP_CHAIN) {
+      // a chain-link panel: frame + diagonal lattice
+      const px = x0 + w * 0.18, pw = w * 0.62;
+      const py = y + m.ch * 0.15, ph = h - m.ch * 0.3;
+      ctx.strokeStyle = PALETTE.chain;
+      ctx.strokeRect(px, py, pw, ph);
+      if (!outline) {
+        ctx.lineWidth = Math.max(1, m.ch * 0.03);
+        ctx.beginPath();
+        const n = 7;
+        for (let i = 0; i <= n; i++) {
+          const f = i / n;
+          ctx.moveTo(px, py + ph * f); ctx.lineTo(px + pw * (1 - f), py + ph);
+          ctx.moveTo(px + pw * f, py); ctx.lineTo(px + pw, py + ph * (1 - f));
+          ctx.moveTo(px, py + ph * f); ctx.lineTo(px + pw * f, py);
+          ctx.moveTo(px + pw * f, py + ph); ctx.lineTo(px + pw, py + ph * f);
+        }
+        ctx.stroke();
       }
-      // a nailed cross-brace near the top and bottom
-      ctx.fillStyle = PALETTE.timberHi;
-      ctx.globalAlpha = 0.5;
-      ctx.fillRect(base - m.cw * 0.1, top + h * 0.18, pw * 2.4, Math.max(1, m.ch * 0.08));
-      ctx.fillRect(base - m.cw * 0.1, top + h * 0.74, pw * 2.4, Math.max(1, m.ch * 0.08));
-      ctx.globalAlpha = 1;
+    } else if (kind === PROP_DOOR) {
+      // a car door, rusted, window up
+      const px = x0 + w * 0.14, pw = w * 0.70;
+      const py = y + m.ch * 0.2, ph = h - m.ch * 0.4;
+      if (outline) { ctx.strokeStyle = PALETTE.rust; ctx.strokeRect(px, py, pw, ph); return; }
+      ctx.fillStyle = PALETTE.rust;
+      ctx.fillRect(px, py, pw, ph);
+      ctx.fillStyle = PALETTE.void_;
+      ctx.fillRect(px + pw * 0.12, py + ph * 0.08, pw * 0.76, ph * 0.36);   // window
+      ctx.fillStyle = '#7a5a3a';
+      ctx.fillRect(px, py, pw, Math.max(1, ph * 0.03));                     // lit top edge
+      ctx.fillStyle = '#2a1c12';
+      ctx.fillRect(px + pw * 0.62, py + ph * 0.58, pw * 0.22, Math.max(1, ph * 0.06)); // handle
+    } else if (kind === PROP_FRIDGE) {
+      // a fridge on its side would be wider than the heap; upright it is
+      const px = x0 + w * 0.22, pw = w * 0.56;
+      const py = y + m.ch * 0.1, ph = h - m.ch * 0.2;
+      if (outline) { ctx.strokeStyle = '#565a5e'; ctx.strokeRect(px, py, pw, ph); return; }
+      ctx.fillStyle = '#565a5e';
+      ctx.fillRect(px, py, pw, ph);
+      ctx.fillStyle = '#3d4044';
+      ctx.fillRect(px, py + ph * 0.38, pw, Math.max(1, ph * 0.02));         // door seam
+      ctx.fillRect(px + pw * 0.10, py + ph * 0.10, Math.max(1, pw * 0.06), ph * 0.22); // handles
+      ctx.fillRect(px + pw * 0.10, py + ph * 0.46, Math.max(1, pw * 0.06), ph * 0.40);
+      ctx.fillStyle = '#6a6e72';
+      ctx.fillRect(px, py, pw, Math.max(1, ph * 0.02));
+    } else {
+      // a stack of tyres
+      const cx = x0 + w * 0.46;
+      const rx = w * 0.30, ry = m.ch * 0.42;
+      for (let t = 0; t < 3; t++) {
+        const cy = y + h - m.ch * (0.5 + t * 0.9);
+        if (outline) {
+          ctx.strokeStyle = '#22252a';
+          ctx.beginPath(); ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2); ctx.stroke();
+          continue;
+        }
+        ctx.fillStyle = '#141618';
+        ctx.beginPath(); ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = '#22252a';
+        ctx.beginPath(); ctx.ellipse(cx, cy - ry * 0.15, rx * 0.5, ry * 0.32, 0, 0, Math.PI * 2); ctx.fill();
+      }
     }
   }
 
-  private drawSandbags(x0: number, top: number): void {
+  private drawSandbags(x0: number, w: number, top: number): void {
     const ctx = this.ctx;
     const m = this.m;
     ctx.fillStyle = PALETTE.sandbag;
-    for (let r = ROWS - 3; r < ROWS; r++) {
-      for (let s = 0; s < 2; s++) {
+    for (let r = ROWS - 4; r < ROWS; r++) {
+      for (let s = 0; s < 3; s++) {
         const h = hash3(r, s, 29);
-        const x = x0 - m.cw * (0.75 - s * 0.42) + ((h & 15) / 15 - 0.5) * m.cw * 0.1;
-        const y = top + r * m.ch + m.ch * (0.08 + s * 0.42);
+        const x = x0 + w * (0.02 + s * 0.11) + ((h & 15) / 15 - 0.5) * m.cw * 0.2;
+        const y = top + r * m.ch + m.ch * (0.10 + (s & 1) * 0.40);
         ctx.beginPath();
-        ctx.ellipse(x, y + m.ch * 0.22, m.cw * 0.55, m.ch * 0.21, 0, 0, Math.PI * 2);
+        ctx.ellipse(x, y + m.ch * 0.22, m.cw * 0.62, m.ch * 0.22, 0, 0, Math.PI * 2);
         ctx.fill();
       }
     }
     ctx.strokeStyle = 'rgba(0,0,0,0.35)';
     ctx.lineWidth = Math.max(1, m.ch * 0.035);
     ctx.beginPath();
-    for (let r = ROWS - 3; r < ROWS; r++) {
-      ctx.moveTo(x0 - m.cw * 1.3, top + r * m.ch + m.ch * 0.5);
-      ctx.lineTo(x0, top + r * m.ch + m.ch * 0.5);
+    for (let r = ROWS - 4; r < ROWS; r++) {
+      ctx.moveTo(x0 - m.cw * 0.6, top + r * m.ch + m.ch * 0.5);
+      ctx.lineTo(x0 + w * 0.3, top + r * m.ch + m.ch * 0.5);
     }
     ctx.stroke();
   }
 
-  private drawWire(x0: number, x1: number, top: number, glyphs: string): void {
+  private drawWire(x0: number, x1: number, top: number, lv: Uint8Array): void {
     const ctx = this.ctx;
     const m = this.m;
+    const w = x1 - x0;
+    const wa = x0 + w * 0.60, wb = x1 - w * 0.16;
     ctx.strokeStyle = PALETTE.wire;
-    ctx.lineWidth = Math.max(1, m.ch * 0.045);
+    ctx.lineWidth = Math.max(1, m.ch * 0.03);
     ctx.beginPath();
     for (let r = 0; r <= ROWS; r++) {
-      const x = (r & 1) === 0 ? x0 + (x1 - x0) * 0.18 : x1 - (x1 - x0) * 0.14;
+      const x = (r & 1) === 0 ? wa : wb;
       const y = top + r * m.ch;
       if (r === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
     }
     ctx.stroke();
     // barbs at each vertex, skipped where the wall is gone
     ctx.strokeStyle = RGBA.wireGlint;
-    ctx.lineWidth = Math.max(1, m.ch * 0.03);
+    ctx.lineWidth = Math.max(1, m.ch * 0.025);
     ctx.beginPath();
     for (let r = 0; r <= ROWS; r++) {
-      const code = r < glyphs.length ? glyphs.charCodeAt(r) : 32;
-      if (r < ROWS && code < 128 && WALL_LEVEL_OF[code] === 0) continue;
-      const x = (r & 1) === 0 ? x0 + (x1 - x0) * 0.18 : x1 - (x1 - x0) * 0.14;
+      if (r < ROWS && lv[r] === 0) continue;
+      const x = (r & 1) === 0 ? wa : wb;
       const y = top + r * m.ch;
       const b = m.ch * 0.13;
       ctx.moveTo(x - b, y - b); ctx.lineTo(x + b, y + b);
@@ -899,17 +1072,27 @@ export class Renderer {
     const cur = state.cursor.row;
     // Prefer the margin left of the field; fall back inside it on narrow screens.
     const outside = m.ox >= m.cw * 3.4;
+    // No scrim: the numbers are scratched onto the ground, not printed in a
+    // gutter. A one-pixel dark copy underneath keeps them legible over grass.
+    const off = Math.max(1, Math.round(m.scale));
     for (let r = 0; r < ROWS; r++) {
       const here = r === cur;
       const label = (this.lineNumbers === 'absolute' || here)
         ? String(r + 1)
         : String(Math.abs(r - cur));
       const col = outside ? -0.9 - label.length : 0.2;
-      if (!outside) this.fillCells(0, r, label.length + 0.6, 1, GUTTER_SCRIM);
-      this.text(label, col, r, here ? PALETTE.amber : PALETTE.dim);
+      const x = m.ox + col * m.cw;
+      const y = m.oy + r * m.ch;
+      this.textPx(label, x + off, y + off, m.cw, m.ch, PALETTE.bg);
+      this.textPx(label, x, y, m.cw, m.ch, here ? PALETTE.amber : PALETTE.dim);
     }
   }
 
+  /**
+   * Top-left, in the sky band, as in the reference: NIGHT n, a cracked
+   * barricade bar with the numeral, the magazine strip (dd / D charges), and a
+   * zombies-remaining strip along the top edge. No panel behind any of it.
+   */
   private drawHud(state: GameState): void {
     const m = this.m;
     const ctx = this.ctx;
@@ -917,40 +1100,76 @@ export class Renderer {
 
     const hpInt = Math.max(0, Math.ceil(b.hp));
     if (hpInt !== this.hHp) { this.hHp = hpInt; this.hpStr = '' + hpInt; }
-    if (state.charges.dd !== this.hDd || state.charges.D !== this.hD) {
-      this.hDd = state.charges.dd; this.hD = state.charges.D;
-      this.chargeStr = state.charges.dd + ' / ' + state.charges.D;
+    if (state.charges.dd !== this.hDd) { this.hDd = state.charges.dd; this.ddStr = '' + state.charges.dd; }
+    if (state.charges.D !== this.hD) { this.hD = state.charges.D; this.dStr = '' + state.charges.D; }
+    if (state.wave !== this.hWave) { this.hWave = state.wave; this.waveStr = 'NIGHT ' + state.wave; }
+
+    // --- NIGHT n --------------------------------------------------------------
+    this.text(this.waveStr, HUD_COL, HUD_ROW, RGBA.hudWhiteDim, 1);
+    if (this.muted) {
+      this.drawMuteIcon(m.ox + (HUD_COL + this.waveStr.length + 1.4) * m.cw, m.oy + (HUD_ROW + 0.5) * m.ch, m.ch * 0.30);
     }
-    if (state.wave !== this.hWave) { this.hWave = state.wave; this.waveStr = 'WAVE ' + state.wave; }
 
-    const right = 59.4;
-    // wave, right-aligned, thin
-    this.text(this.waveStr, right - this.waveStr.length, 15.85, RGBA.hudWhiteDim, 1);
+    // --- barricade bar ---------------------------------------------------------
+    const frac = b.maxHp > 0 ? Math.max(0, Math.min(1, b.hp / b.maxHp)) : 0;
+    const hpColor = frac <= 0.25 ? PALETTE.bloodBright : (frac <= 0.5 ? PALETTE.amber : RGBA.hudWhite);
+    const bx = m.ox + HUD_COL * m.cw;
+    const by = m.oy + (HUD_ROW + 1.15) * m.ch;
+    const bw = HUD_BAR_COLS * m.cw;
+    const bh = m.ch * 0.55;
+    ctx.fillStyle = RGBA.hudTrack;
+    ctx.fillRect(bx - m.cw * 0.2, by - m.ch * 0.08, bw + m.cw * 0.4, bh + m.ch * 0.16);
+    ctx.fillStyle = hpColor;
+    ctx.fillRect(bx, by, bw * frac, bh);
+    // cracks: short dark diagonals, fixed per bar so they read as damage not noise
+    ctx.strokeStyle = RGBA.hudCrack;
+    ctx.lineWidth = Math.max(1, m.ch * 0.04);
+    ctx.beginPath();
+    for (let c = 0; c < 5; c++) {
+      const hc = hash3(c, 0x41, 0x7);
+      const fx = 0.12 + c * 0.18 + ((hc & 15) / 15) * 0.06;
+      if (fx > frac) break;
+      const x = bx + bw * fx;
+      const lean = (((hc >>> 4) & 15) / 15 - 0.5) * m.cw * 0.6;
+      ctx.moveTo(x, by);
+      ctx.lineTo(x + lean, by + bh * 0.55);
+      ctx.lineTo(x + lean * 0.3, by + bh);
+    }
+    ctx.stroke();
+    this.text(this.hpStr, HUD_COL + HUD_BAR_COLS + 0.6, HUD_ROW + 0.8, hpColor, 1.25);
 
-    // cross icon + barricade HP
-    const iconX = m.ox + 50.5 * m.cw;
-    const s = m.ch * 0.34;
-    const y1 = m.oy + 17.35 * m.ch;
+    // --- magazine strip: dd and D charges -------------------------------------
+    const y2 = m.oy + (HUD_ROW + 2.55) * m.ch;
+    const ix = m.ox + (HUD_COL + 0.5) * m.cw;
+    const sI = m.ch * 0.30;
     ctx.fillStyle = RGBA.hudWhite;
-    ctx.fillRect(iconX - s * 0.34, y1 - s, s * 0.68, s * 2);
-    ctx.fillRect(iconX - s, y1 - s * 0.34, s * 2, s * 0.68);
-    const hpColor = b.maxHp > 0 && b.hp <= b.maxHp * 0.25
-      ? PALETTE.bloodBright
-      : (b.maxHp > 0 && b.hp <= b.maxHp * 0.5 ? PALETTE.amber : RGBA.hudWhite);
-    this.text(this.hpStr, 52.1, 16.95, hpColor, 1.25);
-
-    // magazine icon + dd / D charges
-    const y2 = m.oy + 18.75 * m.ch;
-    ctx.fillStyle = RGBA.hudWhite;
-    ctx.fillRect(iconX - s * 0.72, y2 - s * 0.95, s * 1.44, s * 1.9);
+    ctx.fillRect(ix - sI * 0.72, y2 - sI * 0.95, sI * 1.44, sI * 1.9);
     ctx.fillStyle = PALETTE.bg;
-    ctx.fillRect(iconX - s * 0.44, y2 - s * 0.62, s * 0.88, s * 1.3);
+    ctx.fillRect(ix - sI * 0.44, y2 - sI * 0.62, sI * 0.88, sI * 1.3);
     ctx.fillStyle = RGBA.hudWhite;
-    ctx.fillRect(iconX - s * 0.30, y2 - s * 0.30, s * 0.60, Math.max(1, s * 0.18));
-    ctx.fillRect(iconX - s * 0.30, y2 + s * 0.10, s * 0.60, Math.max(1, s * 0.18));
-    this.text(this.chargeStr, 52.1, 18.35, RGBA.hudWhite, 1.25);
+    ctx.fillRect(ix - sI * 0.30, y2 - sI * 0.30, sI * 0.60, Math.max(1, sI * 0.18));
+    ctx.fillRect(ix - sI * 0.30, y2 + sI * 0.10, sI * 0.60, Math.max(1, sI * 0.18));
+    const rowM = HUD_ROW + 2.05;
+    this.text('dd', HUD_COL + 1.6, rowM, RGBA.hudWhiteDim, 1);
+    this.text(this.ddStr, HUD_COL + 3.9, rowM, RGBA.hudWhite, 1);
+    this.text('D', HUD_COL + 6.0, rowM, RGBA.hudWhiteDim, 1);
+    this.text(this.dStr, HUD_COL + 7.3, rowM, RGBA.hudWhite, 1);
 
-    if (this.muted) this.drawMuteIcon(m.ox + 48.4 * m.cw, m.oy + 16.2 * m.ch, m.ch * 0.30);
+    // --- zombies remaining, along the top edge --------------------------------
+    const sim = state.sim;
+    const total = sim.waveSize;
+    if (total > 0 && state.phase === 'playing') {
+      let left = total - sim.resolvedThisWave;
+      if (left < 0) left = 0;
+      const zx = m.ox + STRIP_COL0 * m.cw;
+      const zy = m.oy + STRIP_ROW * m.ch;
+      const zw = (STRIP_COL1 - STRIP_COL0) * m.cw;
+      const zh = m.ch * 0.30;
+      ctx.fillStyle = RGBA.hudTrack;
+      ctx.fillRect(zx - m.cw * 0.2, zy - m.ch * 0.06, zw + m.cw * 0.4, zh + m.ch * 0.12);
+      ctx.fillStyle = RGBA.hudWhiteDim;
+      ctx.fillRect(zx, zy, zw * (left / total), zh);
+    }
 
     this.drawCombo(state.combo);
   }
@@ -984,7 +1203,7 @@ export class Renderer {
     const color = combo >= 10
       ? (this.gore === 'off' ? PALETTE.amber : PALETTE.bloodBright)
       : PALETTE.white;
-    this.textPx(this.comboStr, m.ox + m.cw * 0.5, m.oy - (BAND_TOP - 3.4) * m.ch - m.ch * sc,
+    this.textPx(this.comboStr, m.ox + COMBO_COL * m.cw, m.oy - (BAND_TOP - 3.4) * m.ch - m.ch * sc,
       m.cw * sc, m.ch * sc, color);
   }
 
@@ -1297,7 +1516,7 @@ export class Renderer {
     const rng = this.rng;
     const row = -(BAND_TOP - 3.4) - sc;
     for (let k = 0; k < s.length; k++) {
-      this.particles.spawn(K_GLYPH, 0.5 + k * sc, row,
+      this.particles.spawn(K_GLYPH, COMBO_COL + k * sc, row,
         rng.range(-9, 9), rng.range(-7, 2),
         rng.range(0.6, 1.1), ROWS + BAND_BOTTOM - 0.5, 1, 0,
         s.charCodeAt(k), C.WHITE, P_STICK);

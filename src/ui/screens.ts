@@ -180,7 +180,7 @@ export class Screens {
     r.overlay(PALETTE.bg, 0.86);
     // panel cols 3..57, usable 3.5..56.5; rows -4..19, usable -3.5..17.5
     r.panel(3, -4, 54, 23);
-    r.centerText('YOU DIED', -3, INK_HOT, 2.4);
+    r.centerText('YOU DID NOT SURVIVE THE NIGHT', -3, INK_HOT, 1.8);
     r.centerText(fit(
       `NIGHT ${state.wave}   SCORE ${state.score}   COMBO x${state.sim.longestCombo}   KILLS ${state.sim.kills}`,
       52), 0, INK);

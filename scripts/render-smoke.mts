@@ -143,6 +143,41 @@ lines.push(session(320, 240, 'low', 'absolute', 2, 400));
 lines.push(session(3840, 2160, 'off', 'off', 3, 400));
 lines.push(session(1280, 720, 'full', 'absolute', 4, 400));
 
+// --- frame-time guard: 40 zombies, no particles ---------------------------
+// The fake ctx is a Proxy, so this measures the renderer's own JS cost, not
+// the GPU. It catches a per-frame allocation or an op-count explosion in the
+// figure / wall paths. Budget: 8 ms average over 120 frames at 1600x900.
+function crowd(): { avgMs: number; opsPerFrame: number } {
+  const canvas = mkCanvas(1600, 900);
+  const game = new Game(11, { autoStart: true });
+  const r = new Renderer(canvas as any, game.bus);
+  r.resize();
+  game.step(3000);
+  const st = game.json();
+  const zs = st.buffer.zombies;
+  zs.length = 0;
+  const kinds = ['walker', 'runner', 'armored', 'bloater', 'crawler'] as const;
+  const words = ['shamble', 'spit', '(lurch)', 'putrescent', 'z'];
+  for (let i = 0; i < 40; i++) {
+    const k = i % 5;
+    zs.push({ id: 1000 + i, kind: kinds[k], row: i % 16, col: 2 + ((i * 7) % 44), text: words[k], hp: 1, speed: 1 });
+  }
+  const before = [...calls.values()].reduce((a, b) => a + b, 0);
+  const frames = 120;
+  const t0 = performance.now();
+  for (let f = 0; f < frames; f++) {
+    r.beginFrame(16.67);
+    r.drawGame(st);
+    r.endFrame();
+  }
+  const ms = performance.now() - t0;
+  const after = [...calls.values()].reduce((a, b) => a + b, 0);
+  return { avgMs: ms / frames, opsPerFrame: (after - before) / frames };
+}
+const c = crowd();
+lines.push(`crowd 40 zombies: ${c.avgMs.toFixed(2)} ms/frame, ${c.opsPerFrame | 0} ctx ops/frame`);
+if (c.avgMs > 8) problems.push(`frame-time guard: ${c.avgMs.toFixed(2)} ms/frame with 40 zombies exceeds 8 ms`);
+
 for (const l of lines) process.stdout.write(l + '\n');
 process.stdout.write(`frames drawn: ${frames}   ctx ops: ${[...calls.values()].reduce((a, b) => a + b, 0)}   max save depth: ${maxDepth}\n`);
 if (depth !== 0) problems.push(`unbalanced save/restore: depth ended at ${depth}`);

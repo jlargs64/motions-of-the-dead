@@ -14,7 +14,8 @@
     "replay": "tsx scripts/replay.ts",
     "verify:browser": "tsx scripts/browser-replay.mts",
     "verify": "npm test && npm run build && npm run smoke && npm run smoke:render && npm run replay && npm run verify:browser",
-    "smoke:render": "tsx scripts/render-smoke.mts"
+    "smoke:render": "tsx scripts/render-smoke.mts",
+    "shot": "tsx scripts/shot.mts"
   },
   "devDependencies": {
     "@types/node": "^26.4.1",

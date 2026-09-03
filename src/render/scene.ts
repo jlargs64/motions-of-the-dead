@@ -3,8 +3,8 @@
 //
 // Back layer (one drawImage per frame):
 //   night sky gradient -> ragged conifer treeline -> ground fog band ->
-//   grass with mottled noise and tufts -> lane banding -> dried blood in the
-//   grass -> the survivor's paving and the junk stacked on it.
+//   grass with mottled noise and tufts -> trodden ruts -> dried blood in the
+//   grass -> the paving, the house facade, the floodlight post -> the light.
 // Front layer (one drawImage per frame, over everything the sim draws):
 //   corner vignette + soft cinematic letterbox.
 //
@@ -33,7 +33,30 @@ export const TREE_TOP_ROW = -4.7;
 export const FOG_TOP_ROW = -2.7;
 export const FOG_BOT_ROW = -0.85;
 /** left edge of the survivor's paving, in columns */
-export const PAVING_COL = 54.2;
+export const PAVING_COL = 54.6;
+/** the house facade starts here and runs to the east edge of the screen */
+export const HOUSE_COL = 57.0;
+/** the floodlight post stands here, between the survivor and the house */
+export const POST_COL = 56.7;
+
+// --- the one light source --------------------------------------------------
+// A floodlight on a post at the top of the wall, east side. It is the only
+// light in the scene: the cone falls west across the field and the spawn edge
+// is left in the dark. Both the bake and the per-figure shade table read the
+// same falloff so the figures agree with the ground they stand on.
+/** lamp head position, in field cells */
+export const LIGHT_COL = 55.0;
+export const LIGHT_ROW = -1.5;
+/** inverse-square knee, in columns */
+const LIGHT_K = 22;
+
+/** 0..1 brightness at a column. Monotone from the west edge to the lamp. */
+export function lightFalloff(col: number): number {
+  const d = LIGHT_COL - col;
+  if (d <= 0) return 1;
+  const q = d / LIGHT_K;
+  return 1 / (1 + q * q);
+}
 
 /** Cap the baked layers at ~4.2M device pixels each. */
 const MAX_BAKE_PX = 4_200_000;
@@ -57,6 +80,7 @@ export class Scene {
   private frontCv: HTMLCanvasElement;
   private frontCx: CanvasRenderingContext2D;
   private key = '';
+  private grain: HTMLCanvasElement | null = null;
 
   constructor() {
     const [bc, bx] = newCanvas();
@@ -199,23 +223,35 @@ export class Scene {
     cx.stroke();
     cx.globalAlpha = 1;
 
-    // --- lane banding ------------------------------------------------------
-    // subtle, so 16 lanes read as ground, not as a spreadsheet
-    for (let r = 0; r < g.rows; r++) {
-      const y = yOf(r);
-      cx.fillStyle = (r & 1) === 0 ? 'rgba(214,228,218,0.022)' : 'rgba(0,0,0,0.038)';
-      cx.fillRect(0, y, g.w, g.ch);
+    // --- trodden ruts ------------------------------------------------------
+    // No lane stripes: 16 lanes must read as ground, not as a spreadsheet.
+    // Four ruts worn east-west by the horde, at rows that deliberately do not
+    // line up with lane edges, each a chain of soft dark smears.
+    const RUT_ROWS = [2.6, 6.35, 10.1, 13.7];
+    cx.fillStyle = '#1b231f';
+    for (let q = 0; q < RUT_ROWS.length; q++) {
+      let x = -g.cw * 2;
+      let drift = 0;
+      while (x < xOf(g.cols - 8)) {
+        const len = g.cw * (2.5 + rng.next() * 4);
+        drift += (rng.next() - 0.5) * g.ch * 0.16;
+        if (drift > g.ch * 0.35) drift = g.ch * 0.35;
+        if (drift < -g.ch * 0.35) drift = -g.ch * 0.35;
+        const y = yOf(RUT_ROWS[q]) + drift;
+        cx.globalAlpha = 0.10 + rng.next() * 0.12;
+        cx.beginPath();
+        cx.ellipse(x + len * 0.5, y, len * 0.6, g.ch * (0.10 + rng.next() * 0.10), 0, 0, Math.PI * 2);
+        cx.fill();
+        x += len * 0.8;
+      }
     }
-    cx.fillStyle = 'rgba(0,0,0,0.10)';
-    const lw = Math.max(1, g.ch * 0.03);
-    for (let r = 0; r <= g.rows; r++) cx.fillRect(0, yOf(r) - lw * 0.5, g.w, lw);
-
-    // a trodden path worn down the middle lanes, where the horde walks
-    cx.globalAlpha = 0.10;
+    cx.globalAlpha = 1;
+    // and the wider path worn down the middle, where most of the horde walks
+    cx.globalAlpha = 0.08;
     cx.fillStyle = '#4b4436';
-    for (let p = 0; p < 90; p++) {
-      const r = 2 + rng.next() * (g.rows - 4);
-      const x = rng.next() * xOf(g.cols);
+    for (let p = 0; p < 70; p++) {
+      const r = 3 + rng.next() * (g.rows - 6);
+      const x = rng.next() * xOf(g.cols - 8);
       const rx = g.cw * (1.5 + rng.next() * 5);
       cx.beginPath();
       cx.ellipse(x, yOf(r), rx, g.ch * (0.16 + rng.next() * 0.2), 0, 0, Math.PI * 2);
@@ -275,99 +311,217 @@ export class Scene {
       cx.globalAlpha = 1;
     }
 
-    // --- the survivor's paving + the junk on it ----------------------------
+    // --- east set: a strip of paving, the house, the floodlight post -------
+    this.bakeEast(cx, g, rng, xOf, yOf, yHor);
+
+    // --- ground contact shadow under the wall ------------------------------
+    // The lamp is east of the heap, so the heap throws its shadow west.
+    const wall = xOf(50.2);
+    const wshade = cx.createLinearGradient(wall - g.cw * 4.5, 0, wall, 0);
+    wshade.addColorStop(0, 'rgba(0,0,0,0)');
+    wshade.addColorStop(1, 'rgba(0,0,0,0.42)');
+    cx.fillStyle = wshade;
+    cx.fillRect(wall - g.cw * 4.5, yHor, g.cw * 4.5, g.h - yHor);
+
+    this.bakeLight(cx, g, xOf, yOf, yHor);
+  }
+
+  /**
+   * The floodlight. Three passes, all baked:
+   *  1. a westward darkening wash driven by `lightFalloff`, so the spawn edge
+   *     goes near-black and the ground brightens toward the wall;
+   *  2. a warm wedge from the lamp head fanning west over the ground;
+   *  3. a soft glow around the lamp head itself, spilling onto the sky.
+   * Sky and treeline get half the wash: night is dark everywhere, the lamp
+   * only makes the ground legible.
+   */
+  private bakeLight(
+    cx: CanvasRenderingContext2D, g: SceneGeo,
+    xOf: (c: number) => number, yOf: (r: number) => number, yHor: number,
+  ): void {
+    const lx = xOf(LIGHT_COL);
+    const ly = yOf(LIGHT_ROW);
+
+    // 1. the wash. Alpha at each column = (1 - falloff) * strength.
+    const wash = (strength: number, y0: number, y1: number) => {
+      const grad = cx.createLinearGradient(xOf(-2), 0, xOf(LIGHT_COL), 0);
+      const steps = 12;
+      for (let i = 0; i <= steps; i++) {
+        const col = -2 + (LIGHT_COL + 2) * (i / steps);
+        const a = (1 - lightFalloff(col)) * strength;
+        grad.addColorStop(i / steps, `rgba(4,6,10,${a.toFixed(3)})`);
+      }
+      // a linear gradient extends its first stop to the west margin, so one
+      // rect covers everything west of the lamp
+      cx.fillStyle = grad;
+      cx.fillRect(0, y0, xOf(LIGHT_COL), y1 - y0);
+    };
+    wash(0.86, yHor - 1, g.h);   // ground
+    wash(0.45, 0, yHor);          // sky + treeline
+
+    // 2. the wedge: lamp head -> far west, top of field to below the field
+    const farX = xOf(-4);
+    const wedge = cx.createLinearGradient(lx, 0, xOf(10), 0);
+    wedge.addColorStop(0, 'rgba(205,178,119,0.22)');
+    wedge.addColorStop(0.35, 'rgba(205,178,119,0.10)');
+    wedge.addColorStop(1, 'rgba(205,178,119,0)');
+    cx.fillStyle = wedge;
+    cx.beginPath();
+    cx.moveTo(lx, ly);
+    cx.lineTo(farX, yOf(-0.5));
+    cx.lineTo(farX, yOf(g.rows + BAND_BOTTOM + 1));
+    cx.lineTo(lx, yOf(g.rows + BAND_BOTTOM + 1));
+    cx.closePath();
+    cx.fill();
+
+    // 3. the lamp head glow
+    const r = g.ch * 5.5;
+    const glow = cx.createRadialGradient(lx, ly, 0, lx, ly, r);
+    glow.addColorStop(0, 'rgba(242,230,190,0.55)');
+    glow.addColorStop(0.18, 'rgba(242,230,190,0.22)');
+    glow.addColorStop(1, 'rgba(242,230,190,0)');
+    cx.fillStyle = glow;
+    cx.fillRect(lx - r, ly - r, r * 2, r * 2);
+    // the head itself: a small bright rectangle on the west face of the post
+    cx.fillStyle = PALETTE.light;
+    cx.fillRect(lx - g.cw * 0.55, ly - g.ch * 0.16, g.cw * 0.7, g.ch * 0.32);
+  }
+
+  /**
+   * East of the heap. The camera looks north, the horde comes from the west,
+   * so the house the survivor is defending is a facade filling the east edge
+   * top to bottom. In front of it: a strip of cracked paving, the pallet he
+   * stands on, and the post that carries the floodlight.
+   */
+  private bakeEast(
+    cx: CanvasRenderingContext2D, g: SceneGeo, rng: Rng,
+    xOf: (c: number) => number, yOf: (r: number) => number, yHor: number,
+  ): void {
+    // paving strip, cols 54.6 .. HOUSE_COL
     const px0 = xOf(PAVING_COL);
+    const hx = xOf(HOUSE_COL);
     cx.fillStyle = PALETTE.paving;
-    cx.fillRect(px0, yHor + g.ch * 0.2, g.w - px0, g.h - yHor);
+    cx.fillRect(px0, yHor + g.ch * 0.2, hx - px0, g.h - yHor);
     cx.globalAlpha = 0.35;
     cx.fillStyle = '#2b2e33';
-    for (let s = 0; s < 220; s++) {
-      const x = px0 + rng.next() * (g.w - px0);
+    for (let s = 0; s < 90; s++) {
+      const x = px0 + rng.next() * (hx - px0);
       const y = yHor + rng.next() * (g.h - yHor);
       cx.fillRect(x, y, g.cw * 0.16, g.ch * 0.06);
     }
     cx.globalAlpha = 1;
-    // slab seams
     cx.strokeStyle = 'rgba(0,0,0,0.30)';
     cx.lineWidth = Math.max(1, g.ch * 0.04);
     cx.beginPath();
-    for (let r = -1; r <= g.rows + BAND_BOTTOM; r += 3) {
-      cx.moveTo(px0, yOf(r)); cx.lineTo(g.w, yOf(r));
-    }
+    for (let r = -1; r <= g.rows + BAND_BOTTOM; r += 3) { cx.moveTo(px0, yOf(r)); cx.lineTo(hx, yOf(r)); }
     cx.stroke();
 
-    this.bakeJunk(cx, g, rng, xOf, yOf);
+    // the house: clapboard facade, top to bottom
+    cx.fillStyle = PALETTE.houseWall;
+    cx.fillRect(hx, 0, g.w - hx + 2, g.h);
+    cx.fillStyle = PALETTE.houseWallDark;
+    const board = g.ch * 0.5;
+    for (let y = -board * 0.5; y < g.h; y += board) cx.fillRect(hx, y, g.w - hx + 2, Math.max(1, g.ch * 0.05));
+    // corner trim, catching a little lamp light
+    cx.fillStyle = '#2a2e37';
+    cx.fillRect(hx, 0, Math.max(1, g.cw * 0.35), g.h);
+    // one lit window, rows -2..0.5, boarded on the lower half
+    const wx = xOf(HOUSE_COL + 1.1);
+    const wy = yOf(-2.0);
+    const ww = g.cw * 1.9;
+    const wh = g.ch * 2.5;
+    const glow = cx.createRadialGradient(wx + ww * 0.5, wy + wh * 0.5, 0, wx + ww * 0.5, wy + wh * 0.5, g.ch * 4);
+    glow.addColorStop(0, 'rgba(217,178,92,0.30)');
+    glow.addColorStop(1, 'rgba(217,178,92,0)');
+    cx.fillStyle = glow;
+    cx.fillRect(wx - g.ch * 4, wy - g.ch * 4, ww + g.ch * 8, wh + g.ch * 8);
+    cx.fillStyle = PALETTE.window;
+    cx.fillRect(wx, wy, ww, wh);
+    cx.fillStyle = '#0f1014';
+    cx.fillRect(wx + ww * 0.47, wy, Math.max(1, ww * 0.06), wh);          // mullion
+    cx.fillRect(wx, wy + wh * 0.45, ww, Math.max(1, wh * 0.05));
+    cx.fillStyle = PALETTE.timberShadow;                                    // boards nailed over the bottom
+    cx.fillRect(wx - ww * 0.1, wy + wh * 0.58, ww * 1.2, wh * 0.16);
+    cx.fillRect(wx - ww * 0.05, wy + wh * 0.80, ww * 1.15, wh * 0.14);
+    cx.strokeStyle = '#0f1014';
+    cx.lineWidth = Math.max(1, g.ch * 0.06);
+    cx.strokeRect(wx, wy, ww, wh);
 
-    // --- ground contact shadow under the wall ------------------------------
-    const wall = xOf(51.6);
-    const wshade = cx.createLinearGradient(wall - g.cw * 3, 0, wall, 0);
-    wshade.addColorStop(0, 'rgba(0,0,0,0)');
-    wshade.addColorStop(1, 'rgba(0,0,0,0.35)');
-    cx.fillStyle = wshade;
-    cx.fillRect(wall - g.cw * 3, yHor, g.cw * 3, g.h - yHor);
-  }
+    // the pallet the survivor stands on: two courses of slats
+    const palX = xOf(54.7);
+    const palW = g.cw * 2.1;
+    const palY = yOf(12.2);
+    cx.fillStyle = PALETTE.timberShadow;
+    cx.fillRect(palX, palY - g.ch * 0.30, palW, g.ch * 0.30);
+    cx.fillStyle = PALETTE.timber;
+    cx.fillRect(palX, palY - g.ch * 0.30, palW, Math.max(1, g.ch * 0.08));
+    cx.fillRect(palX + palW * 0.08, palY - g.ch * 0.14, palW * 0.84, Math.max(1, g.ch * 0.06));
+    cx.fillStyle = 'rgba(0,0,0,0.35)';
+    cx.fillRect(palX - g.cw * 0.2, palY - g.ch * 0.04, palW + g.cw * 0.4, g.ch * 0.10);
 
-  private bakeJunk(
-    cx: CanvasRenderingContext2D, g: SceneGeo, rng: Rng,
-    xOf: (c: number) => number, yOf: (r: number) => number,
-  ): void {
-    // oil drums and crates behind the survivor. Kept clear of the HUD block
-    // (cols 49..60, rows 15.6..19) and of the survivor himself (rows 6..13).
-    const drum = (col: number, row: number, hCells: number) => {
-      const x = xOf(col);
-      const y = yOf(row);
-      const w = g.cw * 1.5;
-      const h = g.ch * hCells;
-      cx.fillStyle = '#3b3327';
-      cx.fillRect(x, y - h, w, h);
-      cx.fillStyle = '#4d4433';
-      cx.fillRect(x, y - h, w * 0.32, h);
-      cx.fillStyle = '#241f18';
-      cx.fillRect(x + w * 0.78, y - h, w * 0.22, h);
-      cx.fillStyle = 'rgba(0,0,0,0.35)';
-      cx.fillRect(x, y - h * 0.72, w, g.ch * 0.07);
-      cx.fillRect(x, y - h * 0.30, w, g.ch * 0.07);
-      cx.fillStyle = 'rgba(0,0,0,0.30)';
-      cx.fillRect(x - g.cw * 0.15, y - g.ch * 0.08, w + g.cw * 0.3, g.ch * 0.14);
-    };
-    const crate = (col: number, row: number, wCells: number, hCells: number) => {
-      const x = xOf(col);
-      const y = yOf(row);
-      const w = g.cw * wCells;
-      const h = g.ch * hCells;
-      cx.fillStyle = '#4a4034';
-      cx.fillRect(x, y - h, w, h);
-      cx.strokeStyle = '#2a241d';
-      cx.lineWidth = Math.max(1, g.ch * 0.05);
-      cx.strokeRect(x, y - h, w, h);
-      cx.beginPath();
-      cx.moveTo(x, y - h); cx.lineTo(x + w, y);
-      cx.moveTo(x + w, y - h); cx.lineTo(x, y);
-      cx.stroke();
-    };
-
-    drum(57.4, 3.4, 2.1);
-    drum(58.6, 5.2, 2.4);
-    crate(56.9, 14.6, 2.0, 1.5);
-    crate(58.4, 15.0, 1.5, 1.2);
-    crate(57.2, 13.0, 1.4, 1.1);
-    // scattered debris
-    cx.fillStyle = '#332c22';
-    for (let s = 0; s < 14; s++) {
-      const x = xOf(54.6 + rng.next() * 5);
-      const y = yOf(-1 + rng.next() * (g.rows + 3));
-      cx.fillRect(x, y, g.cw * (0.3 + rng.next() * 0.8), g.ch * 0.09);
-    }
+    // the floodlight post: from the paving up past the field, arm reaching west
+    const postX = xOf(POST_COL);
+    const postW = Math.max(2, g.cw * 0.28);
+    const postTop = yOf(LIGHT_ROW) - g.ch * 0.6;
+    cx.fillStyle = '#20232a';
+    cx.fillRect(postX - postW * 0.5, postTop, postW, yOf(g.rows - 1.2) - postTop);
+    cx.fillStyle = '#3a3f49';
+    cx.fillRect(postX - postW * 0.5, postTop, Math.max(1, postW * 0.35), yOf(g.rows - 1.2) - postTop);
+    // arm to the lamp head
+    cx.fillStyle = '#20232a';
+    cx.fillRect(xOf(LIGHT_COL) - g.cw * 0.2, yOf(LIGHT_ROW) - g.ch * 0.45, postX - xOf(LIGHT_COL) + g.cw * 0.2, Math.max(1, g.ch * 0.12));
+    // the hood over the lamp head
+    cx.fillRect(xOf(LIGHT_COL) - g.cw * 0.9, yOf(LIGHT_ROW) - g.ch * 0.40, g.cw * 1.2, Math.max(1, g.ch * 0.16));
+    // ground foot
+    cx.fillStyle = 'rgba(0,0,0,0.40)';
+    cx.fillRect(postX - g.cw * 0.5, yOf(g.rows - 1.3), g.cw, g.ch * 0.16);
   }
 
   // --- front -------------------------------------------------------------
+
+  /** 128x128 tile of deterministic per-pixel noise, built once. */
+  private grainTile(): HTMLCanvasElement | null {
+    if (this.grain) return this.grain;
+    const n = 128;
+    const [cv, cx] = newCanvas();
+    cv.width = n; cv.height = n;
+    const img = cx.createImageData(n, n);
+    const d = img.data;
+    for (let i = 0; i < n * n; i++) {
+      const h = hashCell(i & 127, i >> 7, 0x6e);
+      const v = (h & 1) ? 235 : 8;
+      d[i * 4] = v; d[i * 4 + 1] = v; d[i * 4 + 2] = v;
+      d[i * 4 + 3] = 10 + (((h >>> 8) & 255) / 255) * 5;   // 0.04..0.06
+    }
+    if (typeof (cx as { putImageData?: unknown }).putImageData !== 'function') return null;
+    cx.putImageData(img, 0, 0);
+    this.grain = cv;
+    return cv;
+  }
+
   private bakeFront(cx: CanvasRenderingContext2D, g: SceneGeo): void {
-    const r0 = Math.min(g.w, g.h) * 0.34;
+    // film grain: a static noise tile, scaled with the cell size so it stays
+    // fine-grained on a big display, tiled over the whole frame under the
+    // vignette. Alpha 0.04..0.06 — texture, not noise.
+    const grain = this.grainTile();
+    if (grain) {
+      const pat = cx.createPattern(grain, 'repeat');
+      if (pat) {
+        const k = Math.max(1, Math.round(g.ch / 16));
+        cx.save();
+        cx.scale(k, k);
+        cx.fillStyle = pat;
+        cx.fillRect(0, 0, g.w / k + 1, g.h / k + 1);
+        cx.restore();
+      }
+    }
+
+    const r0 = Math.min(g.w, g.h) * 0.30;
     const r1 = Math.max(g.w, g.h) * 0.78;
     const vg = cx.createRadialGradient(g.w * 0.5, g.h * 0.52, r0, g.w * 0.5, g.h * 0.52, r1);
     vg.addColorStop(0, 'rgba(6,9,14,0)');
-    vg.addColorStop(0.65, 'rgba(6,9,14,0.22)');
-    vg.addColorStop(1, 'rgba(6,9,14,0.72)');
+    vg.addColorStop(0.62, 'rgba(6,9,14,0.32)');
+    vg.addColorStop(1, 'rgba(6,9,14,0.74)');
     cx.fillStyle = vg;
     cx.fillRect(0, 0, g.w, g.h);
 
