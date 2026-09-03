@@ -79,4 +79,7 @@ export type GameEvent =
   // the keystrokes it took against the oracle's par and the stars that earns.
   // The save layer records it; the sim never reads the save.
   | { t: 'mission_done'; id: string; keys: number; par: number; stars: number }
+  // `drill_done` is additive (drills-and-coach D5): a sprint's clock ran out,
+  // with its score. The save layer keeps the best; the sim never reads it.
+  | { t: 'drill_done'; family: string; kills: number; perfect: number; scenes: number }
   | { t: 'death'; wave: number; score: number };

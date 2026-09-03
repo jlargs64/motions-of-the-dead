@@ -6,6 +6,7 @@ import { VimEngine } from '../vim/engine';
 import { Sim } from '../sim/sim';
 import { splitKeys } from '../sim/optimal';
 import { Menu } from '../ui/menu';
+import { FAMILIES, familyById } from '../sim/drills';
 import { renderText } from './format';
 
 export interface GameOpts {
@@ -49,12 +50,15 @@ export class Game {
       // log containing a shopping trip replays identically in both builds
       // (DECISIONS #77).
       if (phase === 'shop') { this.feedShop(k); continue; }
+      // A drill's end card takes `r` and `<Esc>`, nothing else.
+      if (phase === 'stats') { this.feedDrillEnd(k); continue; }
       // On the death screen `i` still inserts you back into the horde.
       if (phase !== 'playing') {
         if (k === 'i') { this.engine.reset(); this.sim.start(); }
         continue;
       }
       if (this.sim.state.sim.mission >= 0) { this.feedMission(k); continue; }
+      if (this.sim.state.sim.drill !== '') { this.feedDrill(k); continue; }
       this.sim.noteKeystroke();
       const cmd = this.engine.feed(k);
       if (cmd) this.sim.apply(cmd);
@@ -84,6 +88,33 @@ export class Game {
     if (cmd) this.sim.apply(cmd);
   }
 
+  /**
+   * One keystroke inside a drill (drills-and-coach D5). `r` with nothing
+   * pending throws the scene away for the next one; everything else is a Vim
+   * key. Half a command followed by `r` is still a command in progress.
+   */
+  private feedDrill(k: string): void {
+    if (k === 'r' && this.engine.pending() === '') { this.sim.skipScene(); return; }
+    this.sim.noteKeystroke();
+    const cmd = this.engine.feed(k);
+    if (cmd) this.sim.apply(cmd);
+  }
+
+  /** The drill end card: `r` runs the same family again, `<Esc>` leaves. */
+  private feedDrillEnd(k: string): void {
+    if (k === 'r') { this.engine.reset(); this.sim.retryDrill(); }
+    else if (k === '<Esc>') { this.engine.reset(); this.leaveDrill(); }
+  }
+
+  /** Out of a drill and back onto the drills list, with the cursor on it. */
+  leaveDrill(): void {
+    const fam = familyById(this.sim.state.sim.drill);
+    const i = fam ? FAMILIES.indexOf(fam) : 0;
+    this.sim.toMenu();
+    this.menu.reset();
+    this.menu.open('drills', Math.max(0, i));
+  }
+
   /** Out of a mission and back onto the list, with the cursor on it. */
   leaveMission(): void {
     const i = this.sim.state.sim.mission;
@@ -109,6 +140,12 @@ export class Game {
       if (k === 'r') { this.engine.reset(); this.sim.retryMission(); return; }
       this.sim.noteMissionKey();
     }
+    // A placement order runs here too: `r` deals the next order, and every
+    // other key counts toward its PERFECT (drills-and-coach D9).
+    if (this.sim.state.sim.drill !== '') {
+      if (k === 'r' && this.engine.pending() === '') { this.sim.skipScene(); return; }
+      this.sim.noteDrillKey();
+    }
     if (k === '<CR>') { this.engine.reset(); this.sim.shopEnter(); return; }
     if (k === '<Esc>') { this.engine.reset(); this.sim.shopCancel(); return; }
     if (shop.mode === 'list') {
@@ -126,6 +163,7 @@ export class Game {
     if (!a) return;
     if (a.t === 'start') { this.engine.reset(); this.menu.reset(); this.sim.start(a.mode); }
     else if (a.t === 'mission') { this.engine.reset(); this.menu.reset(); this.sim.startMission(a.index); }
+    else if (a.t === 'drill') { this.engine.reset(); this.menu.reset(); this.sim.startDrill(a.family); }
   }
 
   /**

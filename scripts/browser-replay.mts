@@ -94,11 +94,19 @@ for (const l of lines) {
   const m = /^step\s+(\d+)$/.exec(l.line.trim());
   // The CLI's mission command (`src/harness/repl.ts`), which is not a keystroke.
   const mi = /^(?:t|tutorial|mission)(?:\s+(\d+))?$/.exec(l.line.trim());
+  // And its drill command, likewise (drills-and-coach).
+  const dr = /^drill(?:\s+([a-z-]+))?$/.exec(l.line.trim());
   if (m) motd.step(Number(m[1]));
   else if (mi) {
     motd.game.engine.reset();
     motd.menu.reset();
     motd.game.sim.startMission((mi[1] ? Number(mi[1]) : 1) - 1);
+    motd.game.bus.drain();
+  }
+  else if (dr) {
+    motd.game.engine.reset();
+    motd.menu.reset();
+    motd.game.sim.startDrill(dr[1] ?? 'counts');
     motd.game.bus.drain();
   }
   else if (/^(quit|:q|state|help|auto .*|seed .*)$/.test(l.line.trim())) continue;

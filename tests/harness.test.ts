@@ -255,7 +255,7 @@ describe('text() on the menu', () => {
   });
   it('a soon row says so and changes no phase', () => {
     const g = menuGame();
-    g.keys('jj<CR>');
+    g.keys('jjj<CR>');
     expect(g.json().phase).toBe('menu');
     expect(g.text()).toContain('soon');
   });

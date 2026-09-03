@@ -1247,6 +1247,74 @@ becomes `resume  - night 7  score 1240` while a run is on hold. Rules:
 The pause panel grew from 15 to 18 rows to fit the row and its blurb;
 `tests/ui-layout.test.ts` draws both variants.
 
+## Drills and the coach
+
+**97. Drills are sixty seconds of oracle-verified scenes; the coach reads the
+ledger and names one.** `src/sim/drills.ts` holds ten families in curriculum
+order - counts, placement, line ends, find, vertical, paragraph, search,
+brackets, quotes, word objects - each with the ledger tokens it owns, a scene
+template, at least three hand-written fixtures, and the mission that teaches
+it. A drill is `mode = 'drill'`: a 60 000 ms clock in `SimState.drillLeft`, a
+frozen horde, an invulnerable wall, one scene at a time, replaced the moment
+its designated target dies or the player presses `r`. Scenes are drawn from
+the sim RNG and accepted only when the oracle agrees they teach the family;
+twenty-four rejections in a row fall back to a fixture picked by the same RNG,
+so `json()` stays a complete snapshot and `scripts/replay.ts` covers a drill
+unchanged (`LOG_VERSION` 6). Score is kills, PERFECTs and scenes; `drill_done`
+carries it, `recordDrill` keeps the best (more kills, then more PERFECTs) and
+a new best pays ten salvage, once, through the wallet.
+
+**Verification is against the oracle's tie set, not its single answer.**
+`optimalKill` breaks ties lexicographically, and a digit sorts before a
+letter: `2wcw` and `fgcw` are four keys each and `2wcw` wins every time, so a
+find drill that asked the single answer to name `f` would have rejected every
+scene a find genuinely solves as cheaply as anything. `optimalKills` returns
+everything tied for cheapest; a scene verifies when one of them exercises the
+family. PERFECT stays `spent <= cost`, so the player who types the find gets
+it. Two families needed more than tokens: `vertical` requires a counted `j`/`k`
+or an absolute jump (a bare `j` is not the lesson) and `counts` requires the
+killing command itself to carry the count (`d3e`, not `2wcw`).
+
+**The oracle grew, additively.** Search candidates `*`, `#`, `/text<CR>` and
+`n` chained on each; `}j` and `{k`, because `}` alone lands on a blank lane
+and could never be part of a kill; counted operators `d2w d3w d2e d3e` and
+`2x 3x`, and `dj d2j d3j dk d2k d3k` issued from where the cursor stands. A
+search or a counted answer is ranked half a keystroke dearer than a plain one
+of the same length, so `*cw` never displaces `wcw`, `2x` never displaces
+`lx`, and they win only where they are genuinely shorter - as `*` is for a
+far sibling, and `d3e` for three adjacent words. `tokensUsed` now names `*`,
+`#` and `n` as themselves, and a count as `{n}`, spelled like the
+curriculum's keycap; without that last one the ledger could not see the
+counts lesson at all, and neither could the coach.
+
+**A drill has no magazine.** The design asked for `dd` and `D` at one each per
+scene so a charge answer stayed possible but never optimal. It is always
+optimal: the ranking refunds two keystrokes of a charge's penalty per extra
+victim, so on any lane of two words `dd` costs what `cw` costs and `D` costs
+less, and no horizontal motion could ever have verified a scene. Every scene
+starts at zero charges, the refusal says so, and the lesson is the game's own
+rule stated flat: cut the word, not the gap.
+
+**The placement family is scored on the span.** It runs the store's real
+placement path exactly as boot-camp mission 8 does - `phase` is `shop`,
+`shop.mode` is `place`, the wallet is `MISSION_SUPPLIES` - and the drill clock
+keeps running from that phase. An order is a hit only on the exact span, the
+next order is dealt either way, and PERFECT is `keystrokes <=
+cheapestPlacement(order, cursor).cost`, computed over the survey grid with the
+oracle's own motion set (`moveKeys`, which allows one hop between motions
+because column 38 of the ruler is neither a mark nor within thirty `l` of a
+far cursor). The coach ranks placement from the counted motions, as it does
+`counts`, and lists it second when both are due.
+
+**The coach.** `need(t) = missed(t) / (1 + used(t))`, ignored under three
+lifetime misses, summed per family, top three, ties by curriculum order. It
+is shown as `overdue` on the drills screen, as three keycapped entries with
+the token that drove each on the record screen (`1` `2` `3` start that drill;
+the per-motion table scrolls with `j` `k`), and as one line on the death
+screen. The ledger records `used` and `kills` during a drill but not
+`missed` - every scene has a known answer - and pays no medal salvage there:
+the personal best is a drill's only economy touch.
+
 ## Subsystem notes
 
 Renderer-specific and audio-specific calls — glyph atlas, particle pooling,

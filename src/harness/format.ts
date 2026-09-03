@@ -10,6 +10,7 @@ import {
 } from '../sim/store';
 import { SURVEY_RULER, spanCost, trapCols, trapLanes } from '../sim/traps';
 import { optimalKill } from '../sim/optimal';
+import { familyById, orderText } from '../sim/drills';
 
 const LEGEND =
   'LEGEND  walker=plain word, any operator covering it' +
@@ -136,6 +137,36 @@ function missionBlock(s: GameState): string[] {
   return out;
 }
 
+/**
+ * The drill, as an agent reads it (drills-and-coach D5): family, seconds left,
+ * kills, PERFECTs and scenes on the first line with the designated target - or
+ * the placement order - and the keys that matter; the family's keycaps and
+ * blurb on the second. On the end card, the score and the two keys that leave.
+ */
+function drillBlock(s: GameState): string[] {
+  const sm = s.sim;
+  const fam = familyById(sm.drill);
+  if (!fam) return [];
+  const score = `kills ${sm.kills}  perfect ${sm.drillPerfect}  scenes ${sm.drillScenes}`;
+  if (s.phase === 'stats') {
+    return [`DRILL OVER  ${fam.id}  ${score}  keys: r run it again, <Esc> back to drills`];
+  }
+  const left = `${Math.floor(Math.max(0, sm.drillLeft) / 1000)}s left`;
+  let what: string;
+  if (sm.drillOrder) {
+    what = `ORDER ${orderText(sm.drillOrder)}  (<CR> anchors, move, <CR> plants; r: new order)`;
+  } else {
+    const z = s.buffer.zombies.find((x) => x.id === sm.drillTarget);
+    what = z
+      ? `target #${z.id} "${z.text}" lane ${z.row + 1} col ${z.col}  (r: new scene)`
+      : 'target gone  (r: new scene)';
+  }
+  return [
+    `DRILL ${fam.id}  ${left}  ${score}  ${what}`,
+    `  ${fam.keys.join(' ')} : ${fam.blurb}`,
+  ];
+}
+
 export function renderText(state: GameState, pending: string, menu?: string[]): string {
   const s = state;
   const sm = s.sim;
@@ -169,6 +200,9 @@ export function renderText(state: GameState, pending: string, menu?: string[]): 
   );
   if (sm.mission >= 0) {
     out.push(...missionBlock(s));
+  } else if (sm.drill !== '') {
+    // Before the store branch: a placement order plays in the store's phase.
+    out.push(...drillBlock(s));
   } else if (s.phase === 'shop') {
     out.push(...storeBlock(s));
   } else {
@@ -203,7 +237,8 @@ export function renderText(state: GameState, pending: string, menu?: string[]): 
   out.push('ZOMBIES  lane col kind     cols_to_wall  text');
   for (const z of zs) {
     out.push(`        ${pad(z.row + 1, 4)}${pad(z.col, 4)} ${z.kind.padEnd(8, ' ')} ` +
-      `${pad(BARRICADE_COL - (z.col + z.text.length), 12)}  ${z.text}${z.hobbled ? '  [hobbled]' : ''}`);
+      `${pad(BARRICADE_COL - (z.col + z.text.length), 12)}  ${z.text}${z.hobbled ? '  [hobbled]' : ''}` +
+      `${sm.drill !== '' && z.id === sm.drillTarget ? '  <-- target' : ''}`);
   }
   if (zs.length === 0) out.push('        (none on the field)');
 

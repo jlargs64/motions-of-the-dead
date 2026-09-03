@@ -44,7 +44,7 @@ menu you navigate the way you navigate a buffer:
 | a mouse click | select the row you clicked, if you clicked on one |
 
 The rows are `survival`, `missions`, `drills`, `armory`, `record`, `options`,
-`save` and `about`. `drills` and `armory` are marked `soon` until they exist.
+`save` and `about`. `armory` is marked `soon` until it exists.
 While a survival run is on hold (see pause, below) the first row reads
 `resume  - night 7  score 1240` instead, and Enter picks it up; `i` still
 starts a new run and leaves the held one alone.
@@ -89,6 +89,16 @@ Put the crosshair on a word and it **locks on** — the aim rides that zombie ea
 as it walks, so you can take your time composing a command.
 
 Full motion list with semantics: [`AGENT.md`](AGENT.md).
+
+**`drills`** is the practice room: ten families in curriculum order (counts,
+placement, line ends, find, vertical, paragraph, search, brackets, quotes,
+word objects), each a sixty-second sprint through scenes the oracle has
+verified genuinely reward that motion. Frozen horde, invulnerable wall, no
+charges; kill the marked target and the next scene is dealt, `r` skips one.
+Score is kills and `PERFECT`s, the best is kept in the save, and a new best
+pays salvage. The `placement` family is the store's placement mode run as a
+drill - an order like `fence  lanes 3..5  col 30`, scored on the exact span.
+Families the coach thinks you owe are tagged `overdue`.
 
 ## Layout
 
@@ -167,8 +177,12 @@ it is the `MOTIONS` block. (In the code it is still `Ledger` / `src/ui/ledger.ts
 would have worked from where your cursor actually was — brute force over the
 motion set, verified by running each candidate through the real engine. At death
 it shows your three most-used motions, three motions that were available and
-would have been optimal but you never touched, and your keystrokes-per-kill
-across runs. Stored in the save blob under `lifetime`.
+would have been optimal but you never touched, your keystrokes-per-kill
+across runs, and the coach's one line. The `record` screen has the whole
+table - every motion with used, kills and missed, worst first, `j` `k` to
+scroll - the trend, medal and kill totals, and the coach's three families
+with a keycap each: `1`, `2` or `3` starts that drill. Stored in the save
+blob under `lifetime` and `drills`.
 
 ## Your save
 

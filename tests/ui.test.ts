@@ -154,8 +154,8 @@ describe('menu rows', () => {
     expect(at(m)).toBe('survival');
     expect(m.atRoot).toBe(true);
   });
-  it('marks only drills and armory soon', () => {
-    expect(MAIN_ROWS.filter((r) => r.soon).map((r) => r.id)).toEqual(['drills', 'armory']);
+  it('marks only armory soon', () => {
+    expect(MAIN_ROWS.filter((r) => r.soon).map((r) => r.id)).toEqual(['armory']);
   });
   it('every rendered string is printable ASCII', () => {
     for (const r of [...MAIN_ROWS, ...OPTION_ROWS, ...ABOUT_ROWS]) {
@@ -463,10 +463,10 @@ describe('menu select and back', () => {
   });
   it('a soon row posts a note and changes no screen', () => {
     const m = new Menu();
-    feed(m, ['2', 'j']);
+    feed(m, ['3', 'j']);
     const a = m.feed('<CR>');
     expect(a?.t).toBe('note');
-    expect(m.message).toContain('drills');
+    expect(m.message).toContain('armory');
     expect(m.screen).toBe('main');
   });
   it('opens options with l and comes back with Esc, cursor intact', () => {

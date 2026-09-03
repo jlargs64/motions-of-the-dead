@@ -2,6 +2,7 @@
 import { Game } from './api';
 import { LOG_VERSION } from './logversion';
 import { MISSIONS } from '../sim/missions';
+import { FAMILIES, familyById } from '../sim/drills';
 import type { GameEvent } from '../core/types';
 
 export { LOG_VERSION };
@@ -23,6 +24,7 @@ export const HELP = [
   '  seed <n>    start a fresh run on seed n',
   '  auto on|off advance in real time between commands (default off)',
   `  t [n]       start mission n (1..${MISSIONS.length}, default 1; boot camp is 1..8)`,
+  `  drill [id]  start a sixty-second drill: ${FAMILIES.map((f) => f.id).join(' ')}`,
   '  help        this',
   '  quit / :q   exit',
 ].join('\n');
@@ -66,6 +68,18 @@ export function dispatch(r: Repl, raw: string): DispatchResult {
     r.game.menu.reset();
     r.game.sim.startMission(n - 1);
     return { out: `mission ${n}`, events: r.game.bus.drain(), print: true };
+  }
+
+  // Drills are reachable from the menu with keys too; this is the shortcut
+  // that `t` is for missions, and the way a log records one from a live run.
+  const dr = /^drill(?:\s+([a-z-]+))?$/.exec(line);
+  if (dr) {
+    const id = dr[1] ?? FAMILIES[0].id;
+    if (!familyById(id)) return { out: `no such drill: ${id}`, events: [], print: false };
+    r.game.engine.reset();
+    r.game.menu.reset();
+    r.game.sim.startDrill(id);
+    return { out: `drill ${id}`, events: r.game.bus.drain(), print: true };
   }
 
   const a = /^auto\s+(on|off)$/.exec(line);

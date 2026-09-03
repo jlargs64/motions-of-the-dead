@@ -54,7 +54,7 @@ PHASE menu  MODE survival  (not in a run)
 MENU main
 > survival  - the endless night
   missions  - learn one motion at a time
-  drills  (soon)  - one motion, over and over
+  drills  - one motion, repeated
   armory  (soon)  - what you look like doing it
   record  - your service record
   options  - sound, gore, line numbers
@@ -424,7 +424,11 @@ by definition — and a zombie that spawned after the anchor is not judged at
 all.
 
 **For an agent this is a free grader.** Read `optimal` back and you have the
-keystring you should have typed.
+keystring you should have typed. The oracle knows `*`, `#`, `/text<CR>` and
+`n`, counted operators (`d3e`, `d2j`, `3x`) and `}j` / `{k`; a search or a
+counted answer only ever appears where it is strictly shorter than the plain
+one. In the ledger a count is its own token, `{n}`, and `*` `#` `n` are
+theirs.
 
 ---
 
@@ -560,6 +564,57 @@ t 8          # or the `missions` row, eighth entry
 <CR>         # plants a three-lane fence: 4 keys, par 4, three stars
 n            # on to Basic Movement
 ```
+
+## Drills
+
+The `drills` row on the menu (or `jj<CR>` from the top) lists ten families,
+and `drill <id>` at the CLI starts one directly, the way `t [n]` starts a
+mission (`drill find`, `drill placement`, ...). The list:
+one row each in curriculum order: `counts`, `placement`, `line ends`, `find`,
+`vertical`, `paragraph`, `search`, `brackets`, `quotes`, `word objects`.
+Enter on a row starts a **sixty-second sprint**: one scene at a time, a
+frozen horde, a wall that takes no damage, and **no charges at all** - `dd`
+and `D` are refused, and so is any `dw` that would sweep more than four cells
+of empty ground (the game's ordinary waste rule; cut the word with `cw`, `de`
+or `diw`). Every scene has a **designated target**; killing it clears the
+scene and the next is dealt in the same tick. Killing anything else is a kill
+and nothing more. `r` with no half-typed command throws the scene away for
+the next one, uncredited.
+
+Every scene is generated from the family's template and **verified by the
+oracle**: it is kept only when one of the cheapest kills of its target, from
+its starting cursor, uses the family's motion. So a find scene is one where
+`f` is as cheap as anything, and typing the find earns `PERFECT`
+(`spent <= optimal.length`, the same rule as everywhere). `text()` replaces
+the `LESSON` line with two `DRILL` lines and marks the target in the table:
+
+```
+DRILL find  41s left  kills 6  perfect 4  scenes 5  target #12 "rot" lane 13 col 30  (r: new scene)
+  f t ; : name the letter, land on the word
+...
+ZOMBIES  lane col kind     cols_to_wall  text
+          13  30 walker             19  rot  <-- target
+```
+
+`placement` is the one family that is not a kill. It opens in the store's
+placement mode (`phase` is `shop`, `sim.shop.mode` is `place`, a full wallet)
+with an **order** on the `DRILL` line - `ORDER fence  lanes 3..5  col 30` -
+and the clock still running. `<CR>` anchors, a counted motion spans, `<CR>`
+plants; the order is a hit only on the exact span, and the next order is
+dealt either way. `PERFECT` here is beating the fewest keystrokes that fill
+the order from where the crosshair started.
+
+When the clock reaches zero, `phase` is `stats` and the line is
+`DRILL OVER  find  kills 22  perfect 14  scenes 20  keys: r run it again, <Esc> back to drills`.
+`drill_done` carries `family`, `kills`, `perfect` and `scenes`; the browser
+keeps the best (most kills, then most PERFECTs) under `save.drills[family]`
+and pays ten salvage for a new one. Headless there is no save.
+
+**The coach** ranks families from the lifetime ledger - `missed / (1 + used)`
+per token, three misses minimum, summed per family - and tags its top three
+`overdue` on the drills screen, lists them with a keycap on the record screen
+(`1` `2` `3` start that drill), and says one line about the first on the
+death screen. The headless harness has no save, so its coach is always quiet.
 
 ## The wave curriculum
 

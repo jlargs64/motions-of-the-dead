@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { Screens } from '../src/ui/screens';
 import { Ledger } from '../src/ui/ledger';
-import { MAIN_ROWS, Menu, MISSION_ROWS, OPTION_ROWS } from '../src/ui/menu';
+import { LEDGER_TABLE_LINES, MAIN_ROWS, Menu, MISSION_ROWS, OPTION_ROWS } from '../src/ui/menu';
+import { FAMILIES } from '../src/sim/drills';
+import type { DrillRecord } from '../src/save/schema';
 import { ABOUT_PAGES } from '../src/ui/about';
 import { MissionDemo } from '../src/ui/missiondemo';
 import { DEMO_KEY_MS, MISSIONS, missionForLesson } from '../src/sim/missions';
@@ -78,6 +80,8 @@ function check(name: string, draw: (r: Renderer) => void): void {
 
   for (const b of ruler.boxes) {
     const end = b.col + b.w;
+    // The glyph atlas bakes 32..126 and nothing else (DECISIONS R11).
+    expect(b.what, `${name}: ${b.what} is not printable ASCII`).toMatch(/^[\x20-\x7e]*$/);
     expect(b.col, `${name}: ${b.what} starts left of the grid`).toBeGreaterThanOrEqual(0);
     expect(end, `${name}: ${b.what} runs past column ${COLS} (ends ${end.toFixed(1)})`)
       .toBeLessThanOrEqual(COLS);
@@ -334,11 +338,70 @@ describe('card layout fits the panel it is printed on', () => {
       { gore: 'full', lineNumbers: 'relative', equipped: {} }));
   });
 
+  it('drills screen, every row, with every best at its widest and every tag on', () => {
+    const { s } = screens();
+    const led = (s as unknown as { ledger: Ledger }).ledger;
+    const open = (): Menu => { const m = new Menu(); m.feed('j'); m.feed('j'); m.feed('<CR>'); return m; };
+    expect(open().screen).toBe('drills');
+    for (let i = 0; i < FAMILIES.length; i++) {
+      const m = open();
+      for (let k = 0; k < i; k++) m.feed('j');
+      check(`drills row ${FAMILIES[i].id} (no bests)`, (r) => s.drawDrills(r, m));
+    }
+    const full: Record<string, DrillRecord> = {};
+    for (const f of FAMILIES) full[f.id] = { best: 999, perfect: 999 };
+    // Every family the coach can name, so `overdue` lands on three rows.
+    for (const tok of ['f', 'i(', '*']) led.data.missed[tok] = 99_999;
+    expect(led.coach()).toHaveLength(3);
+    for (let i = 0; i < FAMILIES.length; i++) {
+      const m = open();
+      for (let k = 0; k < i; k++) m.feed('j');
+      check(`drills row ${FAMILIES[i].id} (maxed)`, (r) => s.drawDrills(r, m, full));
+    }
+    const m = open();
+    m.feed('/'); for (const ch of 'q'.repeat(60)) m.feed(ch);
+    check('drills searching', (r) => s.drawDrills(r, m, full));
+    m.feed('<CR>');
+    check('drills E486', (r) => s.drawDrills(r, m, full));
+  });
+
+  it('drill strip and end card, every family at the widest values', () => {
+    const { s, st } = screens();
+    const led = (s as unknown as { ledger: Ledger }).ledger;
+    st.phase = 'playing';
+    st.sim.mode = 'drill';
+    st.sim.kills = 999;
+    st.sim.drillPerfect = 999;
+    st.sim.drillScenes = 999;
+    st.buffer.zombies.push({ id: 7, kind: 'bloater', row: 15, col: 41, text: 'exsanguine', hp: 1, speed: 0 });
+    for (const f of FAMILIES) {
+      st.sim.drill = f.id;
+      for (const left of [59_999, 9_999, 0]) {
+        st.sim.drillLeft = left;
+        st.sim.drillTarget = 7;
+        check(`drill strip ${f.id} ${left}ms`, (r) => s.drawDrillStrip(r, st));
+        st.sim.drillTarget = 0;
+        check(`drill strip ${f.id} ${left}ms (no target)`, (r) => s.drawDrillStrip(r, st));
+      }
+      st.phase = 'stats';
+      check(`drill end ${f.id} (first run)`, (r) => s.drawDrillEnd(r, st, null, true));
+      check(`drill end ${f.id} (beaten)`, (r) => s.drawDrillEnd(r, st, { best: 999, perfect: 999 }, true));
+      check(`drill end ${f.id} (not a best)`, (r) => s.drawDrillEnd(r, st, { best: 999, perfect: 999 }, false));
+      st.phase = 'playing';
+    }
+    // and with a coach line on the end card
+    for (const tok of ['f', 'i(', '*']) led.data.missed[tok] = 99_999;
+    st.phase = 'stats';
+    st.sim.drill = 'word-objects';
+    check('drill end + coach', (r) => s.drawDrillEnd(r, st, { best: 1, perfect: 0 }, true));
+  });
+
   it('ledger screen, empty and with the longest lifetime it can hold', () => {
     const { s } = screens();
     const led = (s as unknown as { ledger: Ledger }).ledger;
     const m = new Menu();
     m.feed('5'); m.feed('G'); m.feed('l');
+    expect(m.screen).toBe('ledger');
 
     check('ledger (fresh profile)', (r) => s.drawLedgerScreen(r, m));
 
@@ -347,12 +410,29 @@ describe('card layout fits the panel it is printed on', () => {
     led.data.runs = Array.from({ length: 40 }, (_, i) => ({
       at: i, wave: 33, score: 9_999_999, kills: 99_999, keystrokes: 400_000, kpk: 999.99,
     }));
-    // The widest tokens the ledger can name, at the widest counts.
-    for (const tok of ['di(', 'ca"', 'd3w', 'dd', 'D', 'f', 'gg']) {
-      led.data.motions[tok] = { used: 999_999, kills: 999_999 };
-      led.data.missed[tok] = 999_999;
+    // The widest tokens the ledger can name, at the widest counts, and more
+    // rows than the table shows so every scroll position is drawn.
+    for (const tok of ['di(', 'ca"', 'd3w', 'dd', 'D', 'f', 'gg', '{n}', 'iw', '*', '$', '}', 'M', 'x']) {
+      led.data.motions[tok] = { used: 99_999, kills: 99_999 };
+      led.data.missed[tok] = 99_999;
     }
+    for (const name of ['PERFECT', 'SNIPE', 'KILLIONAIRE']) led.data.medals[name] = 99_999;
+    m.ledgerRows = () => led.table().length;
+    expect(led.table().length).toBeGreaterThan(LEDGER_TABLE_LINES);
+    expect(led.coach()).toHaveLength(3);
     check('ledger (full)', (r) => s.drawLedgerScreen(r, m));
+    for (let i = 0; i < led.table().length; i++) {
+      m.feed('j');
+      check(`ledger (full) scrolled ${i + 1}`, (r) => s.drawLedgerScreen(r, m));
+    }
+    // clamps: one more `j` moves nothing, and `k` all the way back
+    const bottom = m.ledgerTop;
+    m.feed('j');
+    expect(m.ledgerTop).toBe(bottom);
+    expect(bottom).toBe(led.table().length - LEDGER_TABLE_LINES);
+    for (let i = 0; i < 40; i++) m.feed('k');
+    expect(m.ledgerTop).toBe(0);
+    check('ledger (full) scrolled back', (r) => s.drawLedgerScreen(r, m));
 
     // one run only, so the "last 1 run" singular is measured too
     led.data.runs = [{ at: 1, wave: 3, score: 10, kills: 1, keystrokes: 9, kpk: 9 }];
@@ -439,6 +519,9 @@ describe('card layout fits the panel it is printed on', () => {
       at: i, wave: 3, score: 1, kills: 10, keystrokes: 40, kpk: 44.44,
     }));
     check('death', (r) => s.drawDeath(r, st));
+    // with the coach naming the widest family
+    led.data.missed.iw = 99_999;
+    check('death + coach', (r) => s.drawDeath(r, st));
     s.error = 'E37: No write since last change (add ! to override)';
     check('death + E37', (r) => s.drawDeath(r, st));
     s.error = '';

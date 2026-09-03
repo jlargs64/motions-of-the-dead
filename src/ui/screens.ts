@@ -5,14 +5,17 @@ import type { Renderer } from '../render/renderer';
 import type { GameState } from '../core/state';
 import { LESSON_COUNT, waveDef } from '../sim/waves';
 import { DEMO_COLS, MISSIONS, dimmed, missionForLesson, starsFor } from '../sim/missions';
-import type { MissionRecord } from '../save/schema';
+import type { DrillRecord, MissionRecord } from '../save/schema';
 import { missionPar } from '../sim/optimal';
+import { FAMILIES, familyById, familyMissionTitle, familyOf } from '../sim/drills';
+import { COACH_QUIET, coachLine, entryFamily } from '../sim/coach';
 import {
   CARD_LINE, ITEMS, canBuy, capOf, manifestCard, ownedOf, ownedText,
 } from '../sim/store';
 import { spanCost } from '../sim/traps';
 import { deathLine } from './deaths';
 import type { Ledger } from './ledger';
+import { LEDGER_TABLE_LINES } from './menu';
 import type { Menu } from './menu';
 import { ABOUT_PAGES, ABOUT_LINES, ABOUT_WIDTH, wrapPage } from './about';
 import type { MissionDemo } from './missiondemo';
@@ -358,6 +361,110 @@ export class Screens {
     }
   }
 
+  // ---------------------------------------------------------------- drills
+  // One row per family on the menu panel, the selected family's blurb, keys,
+  // best and teaching mission below the list. `overdue` is the coach's tag
+  // (drills-and-coach D7); every column is a constant so the layout test can
+  // hold the card at its widest values.
+
+  private static readonly D_NAME = 10;     // the family's name
+  private static readonly D_KEYS = 24;     // its keycaps, as text
+  private static readonly D_BEST = 38;     // `best 999`
+  private static readonly D_TAG = 48;      // `overdue`
+  private static readonly D_TOP = 0;       // the first family row
+  private static readonly D_DETAIL = 12;   // blurb; then caps, best, mission
+
+  /** Bests on record for each family, or none. */
+  drawDrills(r: Renderer, menu: Menu, records: Readonly<Record<string, DrillRecord>> = {}): void {
+    this.menuPanel(r);
+    r.centerText('DRILLS', -4, INK, 2.0);
+    r.centerText('sixty seconds. one motion. a score.', -2, INK_DIM);
+
+    const overdue = this.ledger.coach().map((e) => e.family);
+    const cur = menu.cursor;
+    this.rowCells = [];
+    for (let i = 0; i < FAMILIES.length; i++) {
+      const f = FAMILIES[i];
+      const row = Screens.D_TOP + i;
+      const on = i === cur;
+      this.rowCells.push(row);
+      this.mark(r, row, on);
+      r.text(fit(f.name, 12), Screens.D_NAME, row, on ? INK_HOT : INK);
+      r.text(fit(f.keys.join(' '), 12), Screens.D_KEYS, row, INK_DIM);
+      const rec = records[f.id];
+      r.text(fit(rec ? `best ${rec.best}` : '-', 9), Screens.D_BEST, row, rec ? INK : INK_DIM);
+      if (overdue.includes(f.id)) r.text('overdue', Screens.D_TAG, row, INK_HOT);
+    }
+
+    const f = FAMILIES[cur];
+    if (f) {
+      r.rule(Screens.MARK, Screens.D_DETAIL - 1, 44);
+      r.text(fit(f.blurb, 46), Screens.MARK, Screens.D_DETAIL, INK);
+      caps(r, f.keys, Screens.MARK, Screens.D_DETAIL + 1);
+      const rec = records[f.id];
+      r.text(fit(rec ? `best ${rec.best} kills, ${rec.perfect} perfect` : 'not yet run', 46),
+        Screens.MARK, Screens.D_DETAIL + 2, rec ? INK : INK_DIM);
+      r.text(fit(`taught in missions: ${familyMissionTitle(f)}`, 46), Screens.MARK, Screens.D_DETAIL + 3, INK_DIM);
+    }
+
+    this.menuFoot(r, menu, 'j k  move    Enter  start it    h  back');
+  }
+
+  /** Widest a drill strip line may be: column 6 to the panel's right margin. */
+  static readonly DRILL_LINE = 49;
+
+  /**
+   * A strip along the top while a drill runs, like the mission strip: the
+   * family and the clock, kills and PERFECTs, the keycaps, `r`, and the
+   * designated target (drills-and-coach D5). A placement order is drawn by
+   * `drawPlacement` with its teaching lines instead.
+   */
+  drawDrillStrip(r: Renderer, state: GameState): void {
+    const sm = state.sim;
+    const f = familyById(sm.drill);
+    if (!f) return;
+    // panel cols 4..56, usable 4.5..55.5; rows -6..-1, usable -5.5..-2.5
+    r.panel(4, -6, 52, 5);
+    r.text(fit(`DRILL  ${f.name}`, 20), 6, -5, INK);
+    const secs = Math.floor(Math.max(0, sm.drillLeft) / 1000);
+    r.text(fit(`${secs}s`, 4), 27, -5, secs < 10 ? INK_HOT : INK, 1.15);
+    r.text(fit(`kills ${sm.kills}  perfect ${sm.drillPerfect}`, 23), 32, -5, INK_DIM);
+    caps(r, f.keys, 6, -4);
+    r.keycap('r', 40, -4, 3);
+    r.text('new scene', 44, -4, INK_DIM);
+    const z = state.buffer.zombies.find((x) => x.id === sm.drillTarget);
+    r.text(fit(z ? `target  "${z.text}"  lane ${z.row + 1}  col ${z.col}` : f.blurb, Screens.DRILL_LINE), 6, -3, INK);
+  }
+
+  /** The end card's keys. Asserted against the card's line budget. */
+  static readonly DRILL_END_KEYS = 'r  run it again          Esc  back to drills';
+
+  /**
+   * The clock ran out. Kills, PERFECTs and scenes, the best on record before
+   * this run, NEW BEST when it was beaten, and the two keys that leave.
+   */
+  drawDrillEnd(r: Renderer, state: GameState, prev: DrillRecord | null = null, newBest = false): void {
+    const sm = state.sim;
+    const f = familyById(sm.drill);
+    r.overlay(PALETTE.bg, 0.86);
+    // panel cols 3..57, usable 3.5..56.5; rows -4..19, usable -3.5..17.5
+    r.panel(3, -4, 54, 23);
+    r.centerText('TIME', -3, INK_HOT, 1.8);
+    r.centerText(fit(`${f?.name ?? sm.drill} drill`, 36), 0, INK, 1.4);
+    r.centerText(fit(
+      `KILLS ${sm.kills}   PERFECT ${sm.drillPerfect}   SCENES ${sm.drillScenes}`, 52), 3, INK);
+    r.centerText(fit(prev
+      ? `previous best  ${prev.best} kills, ${prev.perfect} perfect`
+      : 'first run of this drill', 52), 5, INK_DIM);
+    if (newBest) r.centerText('NEW BEST', 7, INK_HOT, 1.4);
+    if (f) {
+      caps(r, f.keys, 6, 10);
+      r.text(fit(f.blurb, 48), 6, 12, INK_DIM);
+    }
+    r.centerText(fit(coachLine(this.ledger.coach()), 52), 14, INK_RED);
+    r.centerText(Screens.DRILL_END_KEYS, 17, INK_DIM);
+  }
+
   // ---------------------------------------------------------------- options
 
   drawOptions(r: Renderer, menu: Menu, muted: boolean, settings: Settings): void {
@@ -426,46 +533,92 @@ export class Screens {
 
   // -------------------------------------------------- the service record
 
+  // The card is data from the save (drills-and-coach D8): the headline
+  // numbers, the keystrokes-per-kill trend, a per-motion table that scrolls
+  // with `j`/`k` through `menu.ledgerTop`, and the coach's three with a
+  // keycap each. Column constants, so the layout test can hold the card at
+  // the widest values the save can carry.
+
+  private static readonly L_VAL = 20;      // first value column
+  private static readonly L_LABEL2 = 36;   // second label column
+  private static readonly L_VAL2 = 44;     // second value column
+  private static readonly L_USED = 20;     // table columns
+  private static readonly L_KILLS = 28;
+  private static readonly L_MISSED = 36;
+  private static readonly L_DRILL = 44;
+  private static readonly L_TABLE = 5;     // first table row; LEDGER_TABLE_LINES of them
+  private static readonly L_COACH = 12;    // the coach label; three entries below
+
   drawLedgerScreen(r: Renderer, menu: Menu): void {
     this.menuPanel(r);
-    r.centerText('SERVICE RECORD', -3, INK, 2.0);
-    r.centerText('the Vim you actually know', -1, INK_DIM);
-    r.rule(Screens.MARK, 1, 44);
+    r.centerText('SERVICE RECORD', -4, INK, 2.0);
+    r.centerText('the Vim you actually know', -2, INK_DIM);
     this.rowCells = [];        // nothing here is selectable, so nothing is clickable
 
     const led = this.ledger;
-    if (led.runCount === 0) {
-      r.centerText('NO RUNS YET', 7, INK_HOT, 1.6);
-      r.centerText('it fills in the first time you do not survive', 10, INK_DIM);
+    const table = led.table();
+    if (led.runCount === 0 && table.length === 0) {
+      r.centerText('NO RUNS YET', 6, INK_HOT, 1.6);
+      r.centerText('it fills in the first time you do not survive', 9, INK_DIM);
+      r.centerText(fit(COACH_QUIET, 46), 12, INK_DIM);
       this.menuFoot(r, menu, 'h or Esc  back to the menu');
       return;
     }
 
-    const pairs = (list: Array<[string, number]>, suffix: (n: number) => string): string =>
-      list.length ? list.map(([k, n]) => `${k} ${suffix(n)}`).join('    ') : '-';
-
-    r.text('high score', Screens.MARK, 3, INK_DIM);
-    r.text(fit(String(led.highScore), 12), Screens.VALUE, 3, INK);
-    r.text('kills', Screens.MARK, 4, INK_DIM);
-    r.text(fit(String(led.lifetimeKills), 12), Screens.VALUE, 4, INK);
-    r.text('runs', Screens.MARK, 5, INK_DIM);
-    r.text(fit(String(led.runCount), 12), Screens.VALUE, 5, INK);
-
-    r.rule(Screens.MARK, 7, 44);
-    r.text('most used', Screens.MARK, 9, INK_DIM);
-    r.text(fit(pairs(led.topUsedEver(3), (n) => String(n)), 26), Screens.VALUE, 9, INK);
-
-    r.text('most missed -', Screens.MARK, 11, INK_DIM);
-    r.text('would have won it', Screens.MARK, 12, INK_DIM);
-    r.text(fit(pairs(led.topMissedEver(3), (n) => `(${n}x)`), 26), Screens.VALUE, 11, INK_HOT);
+    r.text('high score', Screens.MARK, -1, INK_DIM);
+    r.text(fit(String(led.highScore), 15), Screens.L_VAL, -1, INK);
+    r.text('runs', Screens.L_LABEL2, -1, INK_DIM);
+    r.text(fit(String(led.runCount), 11), Screens.L_VAL2, -1, INK);
+    r.text('kills', Screens.MARK, 0, INK_DIM);
+    r.text(fit(String(led.lifetimeKills), 15), Screens.L_VAL, 0, INK);
+    r.text('medals', Screens.L_LABEL2, 0, INK_DIM);
+    r.text(fit(String(led.medalTotal), 11), Screens.L_VAL2, 0, INK);
 
     const trend = led.kpkTrend(8);
-    r.text('keystrokes / kill', Screens.MARK, 14, INK_DIM);
-    r.text(fit(trend.length ? trend.join('  ') : '-', 26), Screens.VALUE, 14, INK);
-    r.text(fit(`last ${trend.length} run${trend.length === 1 ? '' : 's'}, oldest first`, 26),
-      Screens.VALUE, 15, INK_DIM);
+    r.text(fit(`keystrokes / kill, last ${trend.length} run${trend.length === 1 ? '' : 's'}, oldest first`, 46),
+      Screens.MARK, 1, INK_DIM);
+    r.text(fit(trend.length ? trend.map((v) => v.toFixed(1)).join(' ') : '-', 46), Screens.MARK, 2, INK);
+    r.rule(Screens.MARK, 3, 44);
 
-    this.menuFoot(r, menu, 'h or Esc  back to the menu');
+    r.text('motion', Screens.MARK, 4, INK_DIM);
+    r.text('used', Screens.L_USED, 4, INK_DIM);
+    r.text('kills', Screens.L_KILLS, 4, INK_DIM);
+    r.text('missed', Screens.L_MISSED, 4, INK_DIM);
+    r.text('drill', Screens.L_DRILL, 4, INK_DIM);
+    const top = Math.max(0, Math.min(menu.ledgerTop, Math.max(0, table.length - LEDGER_TABLE_LINES)));
+    for (let i = 0; i < LEDGER_TABLE_LINES; i++) {
+      const e = table[top + i];
+      if (!e) break;
+      const row = Screens.L_TABLE + i;
+      r.text(fit(e.tok, 4), Screens.MARK, row, e.missed > 0 ? INK_HOT : INK);
+      r.text(fit(String(e.used), 7), Screens.L_USED, row, INK);
+      r.text(fit(String(e.kills), 7), Screens.L_KILLS, row, INK);
+      r.text(fit(String(e.missed), 7), Screens.L_MISSED, row, e.missed > 0 ? INK_HOT : INK_DIM);
+      const fam = familyOf(e.tok);
+      if (fam) r.text(fit(fam.name, 11), Screens.L_DRILL, row, INK_DIM);
+    }
+    if (table.length === 0) r.text('no motions recorded yet', Screens.MARK, Screens.L_TABLE, INK_DIM);
+    // The window's edges: more above, more below.
+    if (top > 0) r.text('^', 5, Screens.L_TABLE, INK_DIM);
+    if (top + LEDGER_TABLE_LINES < table.length) r.text('v', 5, Screens.L_TABLE + LEDGER_TABLE_LINES - 1, INK_DIM);
+
+    const entries = led.coach();
+    r.text('coach', Screens.MARK, Screens.L_COACH, INK_DIM);
+    r.text(fit(entries.length ? 'the motions you keep not pressing' : COACH_QUIET, 38),
+      17, Screens.L_COACH, INK_DIM);
+    for (let i = 0; i < entries.length && i < 3; i++) {
+      const e = entries[i];
+      const f = entryFamily(e);
+      const row = Screens.L_COACH + 1 + i;
+      r.keycap(String(i + 1), Screens.MARK, row, 3);
+      r.text(fit(f.name, 12), 12, row, INK_HOT);
+      r.text(fit(e.token, 4), 26, row, INK);
+      const used = led.data.motions[e.token]?.used ?? 0;
+      const missed = led.data.missed[e.token] ?? 0;
+      r.text(fit(`${missed} missed, ${used} used`, 24), 31, row, INK_DIM);
+    }
+
+    this.menuFoot(r, menu, '1 2 3  drill it    j k  scroll    h  back');
   }
 
   // ---------------------------------------------------------------- save
@@ -812,6 +965,9 @@ export class Screens {
       r.text('trend', 6, 14, INK_DIM);
       r.text(fit(s.trend.slice(-5).join('  '), 32), 24, 14, INK_DIM);
     }
+    // The coach's one line: the family you most need, and where the drill is
+    // (drills-and-coach D7). Neutral until the ledger has something to say.
+    r.text(fit(coachLine(this.ledger.coach()), 50), 6, 15, INK_HOT);
     if (s.wastedKeystrokes > 0) {
       r.text('wasted', 6, 16, INK_DIM);
       r.text(fit(`${s.wastedKeystrokes} keystrokes`, 32), 24, 16, INK_RED);

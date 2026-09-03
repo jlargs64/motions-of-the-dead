@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
 ### Requirement: Drill families
-The game SHALL define drill families, each naming a set of motion and text-object tokens it teaches: find (`f` `F` `t` `T` `;` `,`), line-ends (`0` `^` `_` `$`), vertical (counted `j` `k`, `G`, `gg`, `H`, `M`, `L`), paragraph (`{` `}`), search (`/` `*` `#`), brackets (bracket text objects), quotes (quote text objects), word-objects (`iw` `aw`), counts (counted operators). Every token the oracle can emit SHALL belong to at most one family.
+The game SHALL define drill families, each naming a set of motion and text-object tokens it teaches: find (`f` `F` `t` `T` `;` `,`), line-ends (`0` `^` `_` `$`), vertical (counted `j` `k`, `G`, `gg`, `H`, `M`, `L`), paragraph (`{` `}`), search (`/` `*` `#` `n`), brackets (bracket text objects and `%`), quotes (quote text objects), word-objects (`iw` `aw`), counts (the count token `{n}`), and placement (no tokens of its own; ranked as `counts`, design D9). Every token the oracle can emit SHALL belong to at most one family.
 
 #### Scenario: Token maps to one family
 - **WHEN** the token `;` is looked up

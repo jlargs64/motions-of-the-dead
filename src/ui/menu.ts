@@ -9,9 +9,10 @@
 // (DECISIONS #57).
 import type { GameMode } from '../core/state';
 import { MISSIONS } from '../sim/missions';
+import { FAMILIES } from '../sim/drills';
 import { ABOUT_PAGES, ABOUT_ROWS, wrapPage } from './about';
 
-export type MenuScreenId = 'main' | 'missions' | 'options' | 'ledger' | 'save' | 'about';
+export type MenuScreenId = 'main' | 'missions' | 'drills' | 'options' | 'ledger' | 'save' | 'about';
 
 export interface MenuRow {
   /** Stable id. `main-menu` owns the order; later changes replace the action. */
@@ -42,7 +43,9 @@ export type MenuAction =
   /** A key the save screen owns; forward it to `SaveScreen.feedKey`. */
   | { t: 'save-key'; key: string }
   /** Pick the suspended survival run back up (DECISIONS #96). */
-  | { t: 'resume' };
+  | { t: 'resume' }
+  /** Start one drill family (drills-and-coach). */
+  | { t: 'drill'; family: string };
 
 /** What the menu says about a run on hold: enough for one row's hint. */
 export interface SuspendedNote { night: number; score: number }
@@ -61,7 +64,7 @@ export interface SuspendedNote { night: number; score: number }
 export const MAIN_ROWS: readonly MenuRow[] = [
   { id: 'survival', label: 'survival', hint: 'the endless night' },
   { id: 'missions', label: 'missions', hint: 'one motion at a time' },
-  { id: 'drills', label: 'drills', hint: 'one motion, repeated', soon: true },
+  { id: 'drills', label: 'drills', hint: 'one motion, repeated' },
   { id: 'armory', label: 'armory', hint: 'what you wear to it', soon: true },
   { id: 'ledger', label: 'record', hint: 'your service record' },
   { id: 'options', label: 'options', hint: 'sound, gore, numbers' },
@@ -81,6 +84,19 @@ export const MISSION_ROWS: readonly MenuRow[] = MISSIONS.map((m) => ({
   hint: m.keys.join(' '),
   section: m.section,
 }));
+
+/**
+ * One row per drill family, in curriculum order (drills-and-coach D2). The
+ * hint is the family's keycaps, which is what `text()` wants on one line.
+ */
+export const DRILL_ROWS: readonly MenuRow[] = FAMILIES.map((f) => ({
+  id: f.id,
+  label: f.name,
+  hint: f.keys.join(' '),
+}));
+
+/** Per-motion rows the ledger screen's table shows at once; `j`/`k` scroll it. */
+export const LEDGER_TABLE_LINES = 6;
 
 /** The options rows are the pause card's toggles, in the pause card's order. */
 export const OPTION_ROWS: readonly MenuRow[] = [
@@ -105,6 +121,7 @@ export function resumeRows(note: SuspendedNote): readonly MenuRow[] {
 export function rowsFor(screen: MenuScreenId): readonly MenuRow[] {
   if (screen === 'main') return MAIN_ROWS;
   if (screen === 'missions') return MISSION_ROWS;
+  if (screen === 'drills') return DRILL_ROWS;
   if (screen === 'options') return OPTION_ROWS;
   if (screen === 'about') return ABOUT_ROWS;   // one row per page; j/k turn them
   return [];        // `ledger` and `save` draw themselves; they have no rows
@@ -145,6 +162,15 @@ export class Menu {
    * top. A hook rather than a parameter keeps this module free of the store.
    */
   pickMission: () => number = () => 0;
+  /**
+   * The coach's n-th family (1-based), for the ledger screen's `1` `2` `3`.
+   * `main.ts` points this at the save; headless there is no ledger, so null.
+   */
+  coachPick: (n: number) => string | null = () => null;
+  /** How many rows the ledger screen's table has, so the scroll can clamp. */
+  ledgerRows: () => number = () => 0;
+  /** First table row the ledger screen shows. */
+  ledgerTop = 0;
   /** The run on hold, if any. `main.ts` keeps this in step with the save. */
   private note: SuspendedNote | null = null;
   private mainRows: readonly MenuRow[] = MAIN_ROWS;
@@ -175,6 +201,7 @@ export class Menu {
     this.searching = false;
     this.query = '';
     this.message = '';
+    this.ledgerTop = 0;
   }
 
   private clamp(i: number): number {
@@ -221,8 +248,9 @@ export class Menu {
     }
     this.message = '';
     // A mission row starts that mission; the screen owns the index, so the
-    // row ids stay display-only.
+    // row ids stay display-only. A drill row starts that family.
     if (this.screen === 'missions') return { t: 'mission', index: this.cursor };
+    if (this.screen === 'drills') return { t: 'drill', family: row.id };
     switch (row.id) {
       case 'sound': return { t: 'option', what: 'sound' };
       case 'gore': return { t: 'option', what: 'gore' };
@@ -235,7 +263,8 @@ export class Menu {
         if (fresh) this.setCursor(this.pickMission());
         return a;
       }
-      case 'ledger': return this.push('ledger');
+      case 'drills': return this.push('drills');
+      case 'ledger': this.ledgerTop = 0; return this.push('ledger');
       case 'options': return this.push('options');
       case 'save': return this.push('save');
       case 'about': return this.push('about');
@@ -306,6 +335,22 @@ export class Menu {
 
     const direct = DIRECT[this.screen]?.[key];
     if (direct) { this.count = ''; this.pendingG = false; this.message = ''; return direct; }
+
+    // The ledger screen has a table, not rows: `j`/`k` scroll it, clamped,
+    // and `1` `2` `3` start the coach's drill of that rank (drills-and-coach).
+    if (this.screen === 'ledger') {
+      if (key === '1' || key === '2' || key === '3') {
+        const fam = this.coachPick(Number(key));
+        this.message = fam ? '' : 'the coach has nothing there yet';
+        return fam ? { t: 'drill', family: fam } : null;
+      }
+      if (key === 'j' || key === 'k') {
+        const max = Math.max(0, this.ledgerRows() - LEDGER_TABLE_LINES);
+        this.ledgerTop = Math.max(0, Math.min(max, this.ledgerTop + (key === 'j' ? 1 : -1)));
+        this.count = '';
+        return null;
+      }
+    }
 
     // A second `g` completes `gg`; anything else abandons the first one.
     if (this.pendingG) {

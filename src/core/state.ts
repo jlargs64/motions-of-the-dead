@@ -72,6 +72,17 @@ export interface Trap {
 }
 
 /**
+ * A span order for the placement drill (drills-and-coach D9): what to plant
+ * and exactly where. Declared here, like `Trap`, because `SimState` carries
+ * the current one and `core` may not import `sim` (DECISIONS #77).
+ */
+export interface PlacementOrder {
+  item: TrapKind;
+  row0: Row; row1: Row;
+  col0: Col; col1: Col;
+}
+
+/**
  * The store's own cursor. `mode` is which context the keys mean something in:
  * `list` moves the selection, `place` moves the placement crosshair over the
  * survey grid. Both live in `SimState` because the list cursor decides what
@@ -154,6 +165,24 @@ export interface SimState {
   secondWind: boolean;
   /** Repeater: `.` commands that spend no charge. */
   freeRepeat: number;
+
+  // ---- drills (drills-and-coach D5, D6). Additive, defaulted in
+  // `createState`. Scenes are drawn from the sim RNG, whose cursor is
+  // `rngState`, so `json()` stays a complete snapshot.
+  /** Family id of the running drill, or '' outside one. */
+  drill: string;
+  /** ms left on the sprint clock. */
+  drillLeft: number;
+  /** Scenes cleared: the designated target died, or the order was filled. */
+  drillScenes: number;
+  /** Scene clears judged PERFECT. */
+  drillPerfect: number;
+  /** Zombie id of the current scene's designated target; 0 for an order. */
+  drillTarget: number;
+  /** The placement family's current order, or null. */
+  drillOrder: PlacementOrder | null;
+  /** Keystrokes fed since the current order was dealt, for its PERFECT rule. */
+  drillKeys: number;
 }
 
 export interface GameState {
@@ -221,6 +250,8 @@ export function createState(seed: number): GameState {
       purchases: freshPurchases(),
       wasteBonus: 0, flare: false, wireLanes: 0, spotter: 0,
       manifest: false, secondWind: false, freeRepeat: 0,
+      drill: '', drillLeft: 0, drillScenes: 0, drillPerfect: 0, drillTarget: 0,
+      drillOrder: null, drillKeys: 0,
     },
   };
 }

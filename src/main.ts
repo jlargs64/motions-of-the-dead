@@ -9,11 +9,13 @@ import { Screens } from './ui/screens';
 import { SaveScreen } from './ui/savescreen';
 import { cycleGore, cycleLineNumbers, loadSettings, saveSettings } from './ui/settings';
 import {
-  E482_CLIPBOARD, E484_OPEN, E485_READ, SaveStore, clearSuspended, exportFilename, exportSave,
-  importSave, load as loadSave, merge, recordMission, suspendRun,
+  E482_CLIPBOARD, E484_OPEN, E485_READ, SaveStore, clearSuspended, creditSalvage, exportFilename,
+  exportSave, importSave, load as loadSave, merge, recordDrill, recordMission, suspendRun,
 } from './save/save';
-import type { SuspendedRun } from './save/schema';
+import type { DrillRecord, SuspendedRun } from './save/schema';
 import { MISSIONS, firstUnstarred } from './sim/missions';
+import { DRILL_BEST_SALVAGE, familyById, orderText } from './sim/drills';
+import { coach } from './sim/coach';
 import type { GameState } from './core/state';
 import { format, log } from './core/log';
 import { watch } from './core/watch';
@@ -62,6 +64,21 @@ const demo = new MissionDemo();
 // DONE writes its stars and best through the one store (DECISIONS #93).
 menu.pickMission = () => firstUnstarred(store.get().missions);
 game.bus.on('mission_done', (e) => recordMission(store, e.id, e.keys, e.stars));
+// The ledger screen's `1` `2` `3` start the coach's drills, and its table
+// scrolls over however many motions the save has seen (drills-and-coach D8).
+menu.coachPick = (n) => coach(store.get().lifetime)[n - 1]?.family ?? null;
+menu.ledgerRows = () => ledger.table().length;
+// A finished drill: the best before it, for the end card, then the record
+// and the salvage a new best pays - once, here, through the one store (D5).
+let drillPrev: DrillRecord | null = null;
+let drillNewBest = false;
+game.bus.on('drill_done', (e) => {
+  const rec = store.get().drills[e.family];
+  drillPrev = rec ? { ...rec } : null;
+  drillNewBest = recordDrill(store, e.family, e.kills, e.perfect);
+  if (drillNewBest) creditSalvage(store, DRILL_BEST_SALVAGE);
+  store.flush();
+});
 // A run on hold shows on the menu as the `resume` row (DECISIONS #96).
 function syncSuspended(): void {
   const run = store.get().suspended;
@@ -221,6 +238,12 @@ function runMenuAction(a: MenuAction): void {
       menu.reset();
       game.sim.startMission(a.index);
       break;
+    case 'drill':
+      screens.resetRun();
+      game.engine.reset();
+      menu.reset();
+      game.sim.startDrill(a.family);
+      break;
     case 'screen':
       // The save card is drawn by SaveScreen, which places no menu rows, so
       // the click map has to be cleared by hand on the way in and out.
@@ -324,6 +347,15 @@ function placementTeach(state: GameState): readonly string[] {
   const sm = state.sim;
   const m = sm.mission >= 0 ? MISSIONS[sm.mission] : undefined;
   if (m) return [`MISSION  ${m.title}`, m.hint, 'r  start over'];
+  // A placement order: the drill's clock and score, the order, and `r`.
+  if (sm.drill !== '' && sm.drillOrder) {
+    return [
+      `DRILL  ${familyById(sm.drill)?.name ?? sm.drill}  ${Math.floor(sm.drillLeft / 1000)}s`
+        + `  kills ${sm.kills}  perfect ${sm.drillPerfect}`,
+      `ORDER  ${orderText(sm.drillOrder)}`,
+      'r  new order',
+    ];
+  }
   const p = sm.purchases;
   const planted = p.tripwire + p.fence + p.minefield + p.wire;
   return planted === 0 ? Screens.PLACE_FIRST : [];
@@ -368,6 +400,8 @@ window.addEventListener('keydown', (e) => {
   const state = game.json();
   const phase = state.phase;
   if (inMenu(phase)) { runMenuAction(menu.feed(key)); return; }
+  // A drill's end card: `r` and `<Esc>` go through `game.keys` as headless.
+  if (phase === 'stats') { game.keys(key); return; }
   if (phase === 'dead') {
     const action = screens.feedDeathKey(key);
     if (action === 'restart') { screens.resetRun(); game.engine.reset(); game.sim.start(); }
@@ -464,6 +498,7 @@ function frame(now: number): void {
         if (!halted) demo.advance(dt);
         screens.drawMissions(renderer, menu, demo, store.get().missions);
         break;
+      case 'drills': screens.drawDrills(renderer, menu, store.get().drills); break;
       case 'options': screens.drawOptions(renderer, menu, audio.muted, settings); break;
       case 'ledger': screens.drawLedgerScreen(renderer, menu); break;
       case 'about': screens.drawAbout(renderer, menu); break;
@@ -490,9 +525,11 @@ function frame(now: number): void {
       }
     }
     else if (state.phase === 'playing' && state.sim.mission >= 0) screens.drawMissionStrip(renderer, state);
+    else if (state.phase === 'playing' && state.sim.drill !== '') screens.drawDrillStrip(renderer, state);
     else if (state.phase === 'playing' && state.sim.breather > 0) {
       screens.drawWaveCard(renderer, state, store.get().missions);
     }
+    if (state.phase === 'stats') screens.drawDrillEnd(renderer, state, drillPrev, drillNewBest);
     if (state.phase === 'dead') screens.drawDeath(renderer, state);
     if (paused) screens.drawPause(renderer, audio.muted, settings, canSuspend(state));
   }
