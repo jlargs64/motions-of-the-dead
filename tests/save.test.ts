@@ -301,10 +301,10 @@ describe('merge', () => {
 
   it('drill bests take the max', () => {
     const { local, incoming } = pair();
-    local.drills = { word: { best: 40 } };
-    incoming.drills = { word: { best: 55 }, find: { best: 12 } };
+    local.drills = { word: { best: 40, perfect: 30 }, find: { best: 12, perfect: 2 } };
+    incoming.drills = { word: { best: 55, perfect: 1 }, find: { best: 12, perfect: 9 }, ends: { best: 3, perfect: 0 } };
     expect(merge(local, incoming, 'merge').drills).toEqual({
-      word: { best: 55 }, find: { best: 12 },
+      word: { best: 55, perfect: 1 }, find: { best: 12, perfect: 9 }, ends: { best: 3, perfect: 0 },
     });
   });
 
@@ -397,7 +397,7 @@ describe('export and import', () => {
     save.lifetime.runs = [run(1700000000000, { kpk: 3.75 })];
     save.unlocks = ['helmet'];
     save.missions = { m1: { stars: 3, bestKeys: 6 } };
-    save.drills = { word: { best: 42 } };
+    save.drills = { word: { best: 42, perfect: 7 } };
     save.salvage = 17;
     save.settings = { gore: 'low', lineNumbers: 'off', equipped: { hat: 'cap' } };
     (save as Record<string, unknown>).fromTheFuture = { x: 1 };

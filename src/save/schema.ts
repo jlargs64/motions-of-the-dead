@@ -43,7 +43,8 @@ export interface MissionRecord {
   bestKeys: number;
 }
 
-export interface DrillRecord { best: number }
+/** A drill family's personal best: most kills, and the PERFECTs that run had. */
+export interface DrillRecord { best: number; perfect: number }
 
 export interface SaveSettings {
   gore: SaveGore;
@@ -191,7 +192,7 @@ export function coerceDrills(v: unknown): Record<string, DrillRecord> {
   if (!isObj(v)) return out;
   for (const [k, d] of Object.entries(v)) {
     if (!isObj(d)) continue;
-    out[k] = { best: count(d.best) };
+    out[k] = { best: count(d.best), perfect: count(d.perfect) };
   }
   return out;
 }

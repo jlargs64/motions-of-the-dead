@@ -4,6 +4,8 @@ import type { Bus } from '../core/bus';
 import type { GameState } from '../core/state';
 import { tokensUsed } from '../sim/optimal';
 import { wastedOf } from '../sim/judgement';
+import { coach } from '../sim/coach';
+import type { CoachEntry } from '../sim/coach';
 import { FIRST_BLOOD, STYLE_BONUS, salvageFor } from '../sim/medals';
 import { MAX_RUNS } from '../save/schema';
 import type { Lifetime, RunRecord } from '../save/schema';
@@ -188,6 +190,29 @@ export class Ledger {
   kpkTrend(n = 8): number[] {
     return this.data.runs.slice(-n).map((r) => r.kpk);
   }
+
+  /** One row per token the save has seen: missed first, then most used (drills-and-coach D8). */
+  table(): Array<{ tok: string; used: number; kills: number; missed: number }> {
+    const toks = new Set([...Object.keys(this.data.motions), ...Object.keys(this.data.missed)]);
+    const out: Array<{ tok: string; used: number; kills: number; missed: number }> = [];
+    for (const tok of toks) {
+      const m = this.data.motions[tok];
+      const row = { tok, used: m?.used ?? 0, kills: m?.kills ?? 0, missed: this.data.missed[tok] ?? 0 };
+      if (row.used > 0 || row.missed > 0) out.push(row);
+    }
+    out.sort((a, b) => (b.missed - a.missed) || (b.used - a.used) || (a.tok < b.tok ? -1 : 1));
+    return out;
+  }
+
+  /** Lifetime medals, every name summed. */
+  get medalTotal(): number {
+    let n = 0;
+    for (const c of Object.values(this.data.medals)) n += c;
+    return n;
+  }
+
+  /** The coach's verdict over the lifetime ledger (drills-and-coach D7). */
+  coach(): CoachEntry[] { return coach(this.data); }
 
   clear(): void {
     this.store.set((save) => { save.lifetime = emptyLifetime(); });

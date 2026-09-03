@@ -27,11 +27,11 @@ A kill SHALL be judged PERFECT when the keystrokes spent since the anchor are le
 - **THEN** the kill is not PERFECT and wasted is 1
 
 ### Requirement: Oracle search candidates
-`optimalKill` SHALL include `*`, `#`, `/<target text><CR>` and `n` chained after `*` or `/` as candidates, verified through the same dry run as every other candidate.
+`optimalKill` SHALL include `*`, `#`, `/<target text><CR>` and `n` chained after `*`, `#` or `/` as candidates, verified through the same dry run as every other candidate, and SHALL rank a search half a keystroke dearer than a plain answer of the same length so an existing verdict is never displaced by a tie.
 
 #### Scenario: Far sibling
 - **WHEN** the cursor is on the word `rot` in lane 2 and an identical `rot` stands alone in lane 13
-- **THEN** the oracle's cheapest kill for the lane 13 zombie begins with `*` or `/rot<CR>`
+- **THEN** the oracle's cheapest kill for the lane 13 zombie begins with `*`, `#` or `/rot<CR>`
 
 #### Scenario: Existing verdicts unchanged
 - **WHEN** a scene contains no duplicate words and the previous best was 3 keystrokes or fewer

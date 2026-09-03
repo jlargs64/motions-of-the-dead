@@ -10,11 +10,15 @@
  * `missionHold`, `missionKeys` and `missionEscaped` (DECISIONS #91). 5 is the
  * leg shot: the first `x` into a word halves the zombie's speed and sets
  * `Zombie.hobbled`, so a version-4 log with an `x` in it walks its horde at a
- * different pace from here on (DECISIONS #94). The replay checkers skip
- * anything below this and print which logs they skipped.
+ * different pace from here on (DECISIONS #94). 6 is drills and the coach:
+ * `SimState` gained the drill fields, the oracle gained search and counted
+ * candidates, and `*`, `#`, `n` and a count are ledger tokens of their own,
+ * so a version-5 log's `kill_judged` events and final state both differ
+ * (DECISIONS #97). The replay checkers skip anything below this and print
+ * which logs they skipped.
  *
  * It sits alone in its own file because `scripts/browser-replay.mts` reads it
  * before it has finished standing up its mock DOM, and must not drag the sim
  * in with it.
  */
-export const LOG_VERSION = 5;
+export const LOG_VERSION = 6;

@@ -54,11 +54,13 @@ Why: the coach needs to say "practice find" and the player needs one place to go
 
 A scene is generated from the family template using the drill RNG, then `optimalKill` is run for the designated target from the designated cursor. The scene is kept only if `tokensUsed(best.keys)` contains a motion in the family's verified set. Budget: up to 24 attempts per scene; on exhaustion, fall back to the family's hand-written fixture scene for that slot. Every family SHALL ship at least three fixtures so the fallback is never empty.
 
-Why: the oracle is what will judge the player's kill as PERFECT. If the oracle says `f` is cheapest, then `f` is what a PERFECT requires, so the drill cannot lie. Alternative: hand-author every scene. Rejected: hand-authored scenes are finite and players memorise them; generation with verification gives endless variety at the same guarantee. The attempt cap keeps the worst-case generation under a frame.
+Why: the oracle is what will judge the player's kill as PERFECT. If the oracle says `f` is cheapest, then `f` is what a PERFECT requires, so the drill cannot lie.
+
+Revised in the build: the check is against the oracle's *tie set* (`optimalKills`), not its single answer. Ties break lexicographically and a digit sorts before a letter, so `2wcw` beats `fgcw` at four keys each and the single answer would have rejected every find scene there is. PERFECT is `spent <= cost`, so the tied find earns it. `vertical` additionally requires a counted `j`/`k` or an absolute jump, and `counts` requires the killing command itself to carry the count. Alternative: hand-author every scene. Rejected: hand-authored scenes are finite and players memorise them; generation with verification gives endless variety at the same guarantee. The attempt cap keeps the worst-case generation under a frame.
 
 ### D4. The search family extends the oracle, additively
 
-`optimalKill` gains candidates `*`, `#`, and `/word<CR>` where `word` is the target's text, plus `n` chained on `*` and `/`. They are verified through `dryRun` like every other candidate. For scenes with no duplicate words and no search candidate that is shorter, existing verdicts do not change, because candidates are sorted by length and the search candidates are 2 or more keystrokes.
+`optimalKill` gains candidates `*`, `#`, and `/word<CR>` where `word` is the target's text, plus `n` chained on `*`, `#` and `/`. They are verified through `dryRun` like every other candidate. The build added, on the same terms, the counted operators `d2w d3w d2e d3e 2x 3x` and the lanewise `dj d2j d3j dk d2k d3k` from the cursor (without them the counts family could never verify), and `}j` / `{k` (without them `}` could never be part of a kill). A search or a counted answer ranks half a keystroke dearer than a plain one of the same length, which is what keeps the existing verdicts. For scenes with no duplicate words and no search candidate that is shorter, existing verdicts do not change, because candidates are sorted by length and the search candidates are 2 or more keystrokes.
 
 Why: without this, the search family cannot be verified and the PERFECT medal can never fire for a search kill. Alternative: verify the search family with a bespoke predicate. Rejected: two oracles.
 
@@ -100,7 +102,9 @@ gets pointed at both.
 
 ### D5. Drill sprint rules live in the sim
 
-A drill is `mode = 'drill'` with: a fixed 60 000 ms clock counted in `SimState`, zero zombie speed, barricade damage disabled, `dd` and `D` charges fixed at 1 each per scene so charge-bearing answers stay possible but never optimal for a single target, and a scene that is replaced the moment its target dies or when the player presses `r`. Killing a non-target zombie counts as a kill but not a scene clear. Score is `{ kills, perfect, scenes }`. `perfect` increments when `judgeKill(...).perfect` is true for the scene's target.
+A drill is `mode = 'drill'` with: a fixed 60 000 ms clock counted in `SimState`, zero zombie speed, barricade damage disabled, an *empty* magazine (`dd` and `D` at 0, reset every scene), and a scene that is replaced the moment its target dies or when the player presses `r`.
+
+Revised in the build: the proposal fixed the charges at 1 each "so charge-bearing answers stay possible but never optimal". They are always optimal - the ranking refunds two keystrokes of a charge's penalty per extra victim, so on any lane of two words `dd` costs what `cw` costs and `D` costs less - and no horizontal family could have verified a scene. Zero charges, and the refusal says why. Killing a non-target zombie counts as a kill but not a scene clear. Score is `{ kills, perfect, scenes }`. `perfect` increments when `judgeKill(...).perfect` is true for the scene's target.
 
 Why: the sprint is a game rule, so it belongs where `tick(dt)` is and where `text()` and `json()` can see it. Alternative: run drills as a UI-layer wrapper over survival like `paused`. Rejected: a headless agent could not play a drill, and the replay check would not cover it.
 

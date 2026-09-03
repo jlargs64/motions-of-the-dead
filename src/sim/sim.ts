@@ -11,7 +11,11 @@ import type { Span } from '../vim/resolve';
 import { HOBBLE_FACTOR, WASTE_ALLOWANCE, chargeKindFor, isLegShot, planKills } from './rules';
 import type { Plan } from './rules';
 import { beginAnchor, judgeKill, noteCommand } from './judgement';
-import type { JudgeAnchor } from './judgement';
+import type { JudgeAnchor, Judgement } from './judgement';
+import {
+  DRILL_CHARGES, DRILL_MS, FAMILIES, cheapestPlacement, familyById, generateScene, orderHit,
+} from './drills';
+import type { DrillFamily } from './drills';
 import {
   PERFECT, STYLE_BONUS, isTrapKill, judgeMultiKill, judgeStyle,
 } from './medals';
@@ -52,6 +56,13 @@ export class Sim {
   /** The anchor the current command's first kill was judged from, for the
    *  style medals awarded after the victims loop. */
   private consumed: JudgeAnchor | null = null;
+  /**
+   * A drill scene's target died inside `apply()`'s victims loop. The field is
+   * replaced only once that loop and the medals are done, or the next victim's
+   * index would point into the new scene. Transient within one command, so it
+   * needs no place in `json()`.
+   */
+  private dealPending = false;
 
   constructor(seed: number, bus: Bus) {
     this.state = createState(seed);
@@ -109,6 +120,9 @@ export class Sim {
     sm.wasteBonus = 0; sm.flare = false; sm.wireLanes = 0; sm.spotter = 0;
     sm.manifest = false; sm.secondWind = false; sm.freeRepeat = 0;
     sm.missionEscaped = false;
+    sm.drill = ''; sm.drillLeft = 0; sm.drillScenes = 0; sm.drillPerfect = 0;
+    sm.drillTarget = 0; sm.drillOrder = null; sm.drillKeys = 0;
+    this.dealPending = false;
   }
 
   /** Back to the main menu, keeping the ledger and high score intact. */
@@ -118,6 +132,8 @@ export class Sim {
     this.state.buffer.zombies.length = 0;
     this.accum.clear();
     sm.mission = -1;
+    sm.drill = '';
+    sm.drillOrder = null;
     // Nothing you bought survives leaving the run.
     sm.traps = [];
     sm.wireLanes = 0;
@@ -413,10 +429,13 @@ export class Sim {
 
   tick(dtMs: number): void {
     const s = this.state;
-    if (s.phase !== 'playing') return;
     const sm = s.sim;
+    // A placement order is played in the store's phase, and the drill clock
+    // does not stop for it (drills-and-coach D9).
+    if (s.phase !== 'playing' && !(s.phase === 'shop' && sm.drill !== '')) return;
     sm.time += dtMs;
 
+    if (sm.drill !== '') { this.tickDrill(dtMs); return; }
     if (sm.mission >= 0) { this.tickMission(dtMs); return; }
 
     if (sm.breather > 0) {
@@ -674,6 +693,9 @@ export class Sim {
       this.flash();
       return;
     }
+    // A drill's horde stands still, so this is the belt to that brace: the
+    // wall takes nothing and the sprint goes on (drills-and-coach D5).
+    if (s.sim.drill !== '') { this.remove(index); return; }
     const dmg = z.text.length;
     s.barricade.hp = Math.max(0, s.barricade.hp - dmg);
     this.remove(index);
@@ -792,8 +814,10 @@ export class Sim {
       } else if (s.charges[charge] <= 0) {
         // The one that ends runs: in survival these do not refill, so a player
         // reaching for `dd` on a crowded lane gets silence and keeps reaching
-        // (DECISIONS #86).
-        this.refuse(`no ${charge} charges - buy one in the store`);
+        // (DECISIONS #86). A drill has no magazine at all, and says so.
+        this.refuse(sm.drill !== ''
+          ? `no ${charge} charges - a drill has no magazine; cut the word, not the gap`
+          : `no ${charge} charges - buy one in the store`);
         return;
       } else {
         s.charges[charge]--;
@@ -848,6 +872,7 @@ export class Sim {
     }
     this.award(cmd, plan, before, cmd.raw);
     if (plan.overkill) this.breakCombo('overkill');
+    if (this.dealPending) { this.dealPending = false; this.dealScene(); }
     this.refresh();
   }
 
@@ -879,6 +904,7 @@ export class Sim {
     // A crush is a kill by one command, so it climbs the same ladder.
     victims.reverse();                    // the Plan contract wants them ascending
     this.award(cmd, joinPlan(victims), before, 'J');
+    if (this.dealPending) { this.dealPending = false; this.dealScene(); }
   }
 
   /** One shot per affected lane, so the renderer can flash and trace. */
@@ -923,7 +949,14 @@ export class Sim {
     this.bus.emit({ t: 'kill', zombieId: id, kind, via, overkill });
     this.bus.emit({ t: 'combo', n: s.combo });
     if (sm.spotter > 0) sm.spotter--;
-    if (!trap) this.judge(id);
+    const j = trap ? null : this.judge(id);
+    // The scene's target is what clears it; anything else was a kill and
+    // nothing more. PERFECT is the shared judgement's word (drills-and-coach D5).
+    if (sm.drill !== '' && id === sm.drillTarget) {
+      sm.drillScenes++;
+      if (j?.perfect) sm.drillPerfect++;
+      this.dealPending = true;
+    }
   }
 
   /**
@@ -932,16 +965,147 @@ export class Sim {
    * of the same command, and kills before a new anchor, were good by
    * definition.
    */
-  private judge(zombieId: number): void {
+  private judge(zombieId: number): Judgement | null {
     const sm = this.state.sim;
     const anchor = sm.judge;
-    if (!anchor) return;
+    if (!anchor) return null;
     sm.judge = null;
     this.consumed = anchor;
     const j = judgeKill(anchor, zombieId);
-    if (!j) return;                      // it spawned after the anchor
+    if (!j) return null;                 // it spawned after the anchor
     this.bus.emit({ t: 'kill_judged', zombieId, spent: j.spent, optimal: j.optimal });
     if (j.perfect) this.medal({ name: PERFECT, bonus: STYLE_BONUS[PERFECT] });
+    return j;
+  }
+
+  // ------------------------------------------------------------------ drills
+  // A sixty-second sprint through scenes of one family (drills-and-coach D5):
+  // frozen horde, invulnerable wall, empty magazine, one scene at a time,
+  // replaced the moment its target dies or the player presses `r`.
+
+  /** The running drill's family, or undefined. */
+  private drillFamily(): DrillFamily | undefined {
+    return this.state.sim.drill === '' ? undefined : familyById(this.state.sim.drill);
+  }
+
+  /**
+   * Start a drill. An unknown id starts the first family rather than
+   * throwing, so a stale save key still lands somewhere.
+   */
+  startDrill(id: string): void {
+    const fam = familyById(id) ?? FAMILIES[0];
+    this.resetRun('drill');
+    const sm = this.state.sim;
+    sm.drill = fam.id;
+    sm.drillLeft = DRILL_MS;
+    this.dealScene();
+    this.refresh();
+  }
+
+  /** `r` mid-drill: this scene is thrown away and the next is dealt. No credit. */
+  skipScene(): void {
+    if (!this.drillFamily() || this.state.phase === 'stats') return;
+    this.dealScene();
+    this.refresh();
+  }
+
+  /** `r` on the end card: the same family from the top. */
+  retryDrill(): void {
+    const fam = this.drillFamily();
+    if (!fam || this.state.phase !== 'stats') return;
+    this.startDrill(fam.id);
+  }
+
+  /** One keystroke fed to a placement order, counted for its PERFECT rule. */
+  noteDrillKey(): void {
+    if (this.state.sim.drill !== '') this.state.sim.drillKeys++;
+  }
+
+  /**
+   * The next scene, drawn and verified by the family (D3) from the sim RNG
+   * (D6). The judge anchor is dropped so the first kill in the new scene is
+   * judged from where the new scene puts the crosshair; the magazine is set
+   * to the drill's, which is empty.
+   */
+  private dealScene(): void {
+    const s = this.state;
+    const sm = s.sim;
+    const fam = this.drillFamily();
+    if (!fam) return;
+    const scene = generateScene(fam, this.rng);
+    sm.rngState = this.rng.state;
+    sm.judge = null;
+    this.consumed = null;
+    sm.lockId = 0;
+    sm.lockOffset = 0;
+    s.charges.dd = DRILL_CHARGES.dd;
+    s.charges.D = DRILL_CHARGES.D;
+    sm.drillKeys = 0;
+    s.cursor = { row: scene.cursor[0], col: scene.cursor[1] };
+    if (scene.order) {
+      // The store's real placement path, as boot-camp mission 8 takes it
+      // (D9): `phase` is `shop` so keys route to `shopCommand` and the
+      // renderer draws the survey grid. The wallet covers any span.
+      this.spawnScene([]);
+      sm.drillTarget = 0;
+      sm.drillOrder = { ...scene.order };
+      s.supplies = MISSION_SUPPLIES;
+      sm.traps = [];
+      sm.wireLanes = 0;
+      sm.purchases = freshPurchases();
+      s.phase = 'shop';
+      sm.shop.cursor = 0;
+      sm.shop.mode = 'place';
+      sm.shop.item = scene.order.item;
+      sm.shop.anchor = null;
+      sm.shop.place = { row: s.cursor.row, col: s.cursor.col };
+      return;
+    }
+    s.phase = 'playing';
+    sm.drillOrder = null;
+    this.spawnScene(scene.spawn);
+    sm.drillTarget = s.buffer.zombies[scene.target]?.id ?? 0;
+  }
+
+  private tickDrill(dtMs: number): void {
+    const sm = this.state.sim;
+    sm.drillLeft -= dtMs;
+    if (sm.drillLeft <= 0) { sm.drillLeft = 0; this.endDrill(); }
+    this.refresh();
+  }
+
+  /** The clock ran out: the end card, and the score for the save to keep. */
+  private endDrill(): void {
+    const s = this.state;
+    const sm = s.sim;
+    s.phase = 'stats';
+    sm.shop.mode = 'list';
+    sm.shop.item = '';
+    sm.shop.anchor = null;
+    this.bus.emit({
+      t: 'drill_done', family: sm.drill, kills: sm.kills, perfect: sm.drillPerfect, scenes: sm.drillScenes,
+    });
+  }
+
+  /**
+   * A plant during a placement order: a hit only on the exact span, PERFECT
+   * when it took no more keystrokes than the cheapest way there was, and the
+   * next order either way (D9). The trap is cleared with the order.
+   */
+  private drillPlanted(): void {
+    const s = this.state;
+    const sm = s.sim;
+    const order = sm.drillOrder;
+    const trap = sm.traps[sm.traps.length - 1];
+    if (order && trap && orderHit(order, trap)) {
+      sm.kills++;
+      sm.drillScenes++;
+      if (sm.drillKeys <= cheapestPlacement(order, s.cursor).cost) {
+        sm.drillPerfect++;
+        this.medal({ name: PERFECT, bonus: STYLE_BONUS[PERFECT] });
+      }
+    }
+    this.dealScene();
   }
 
   /** Multi-kill and style medals for one command, after its victims are gone. */
@@ -1060,7 +1224,7 @@ export class Sim {
     // A mission has no store behind placement, so backing out of it would
     // land on a card that does not belong to the mission. It clears the
     // half-made span instead, which is what `<Esc>` means everywhere else.
-    if (sm.mission >= 0) { sm.shop.anchor = null; return; }
+    if (sm.mission >= 0 || sm.drill !== '') { sm.shop.anchor = null; return; }
     this.endPlacement();
   }
 
@@ -1172,6 +1336,7 @@ export class Sim {
         charges: 1,
       });
       if (sm.mission >= 0) { this.missionPlanted(); this.refresh(); return; }
+      if (sm.drill !== '') { this.drillPlanted(); this.refresh(); return; }
       this.endPlacement();
       return;
     }
@@ -1200,6 +1365,7 @@ export class Sim {
         row0, row1, col0: a.col, col1: a.col, charges: lanes,
       });
       if (sm.mission >= 0) { this.missionPlanted(); this.refresh(); return; }
+      if (sm.drill !== '') { this.drillPlanted(); this.refresh(); return; }
     } else {
       const col0 = Math.min(a.col, place.col);
       const col1 = Math.max(a.col, place.col);
@@ -1210,6 +1376,7 @@ export class Sim {
         row0: a.row, row1: a.row, col0, col1, charges: blocks,
       });
       if (sm.mission >= 0) { this.missionPlanted(); this.refresh(); return; }
+      if (sm.drill !== '') { this.drillPlanted(); this.refresh(); return; }
     }
     this.endPlacement();
   }

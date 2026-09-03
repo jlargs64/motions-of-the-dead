@@ -201,6 +201,28 @@ export function clearSuspended(store: SaveStore): void {
   store.set((s) => { s.suspended = null; });
 }
 
+// ---------------------------------------------------------------- drills
+
+/** More kills wins; the same kills with more PERFECTs wins (drills-and-coach D5). */
+export function beatsDrill(kills: number, perfect: number, rec: DrillRecord | undefined): boolean {
+  if (!rec) return kills > 0 || perfect > 0;
+  return kills > rec.best || (kills === rec.best && perfect > rec.perfect);
+}
+
+/**
+ * Record a finished drill. Returns true when it was a new personal best and
+ * the record was replaced; the caller pays the salvage exactly then. A result
+ * that does not beat the stored best leaves the save untouched.
+ */
+export function recordDrill(store: SaveStore, family: string, kills: number, perfect: number): boolean {
+  if (family === '' || !Number.isFinite(kills) || !Number.isFinite(perfect)) return false;
+  const k = Math.max(0, Math.floor(kills));
+  const p = Math.max(0, Math.floor(perfect));
+  if (!beatsDrill(k, p, store.get().drills[family])) return false;
+  store.set((s) => { s.drills[family] = { best: k, perfect: p }; });
+  return true;
+}
+
 // ---------------------------------------------------------------- merge
 
 function sumCounters(
@@ -258,9 +280,10 @@ function mergeDrills(
   a: Record<string, DrillRecord>, b: Record<string, DrillRecord>,
 ): Record<string, DrillRecord> {
   const out: Record<string, DrillRecord> = {};
-  for (const [k, d] of Object.entries(a)) out[k] = { best: d.best };
+  for (const [k, d] of Object.entries(a)) out[k] = { best: d.best, perfect: d.perfect };
   for (const [k, d] of Object.entries(b)) {
-    out[k] = { best: Math.max(out[k]?.best ?? 0, d.best) };
+    const cur = out[k];
+    out[k] = !cur || beatsDrill(d.best, d.perfect, cur) ? { best: d.best, perfect: d.perfect } : cur;
   }
   return out;
 }

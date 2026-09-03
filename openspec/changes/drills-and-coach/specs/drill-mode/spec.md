@@ -1,15 +1,15 @@
 ## ADDED Requirements
 
 ### Requirement: Drill mode rules
-When `SimState.mode` is `drill`, the sim SHALL run a 60 000 ms clock, spawn zombies with zero speed, disable barricade damage, and set `dd` and `D` charges to 1 at the start of every scene. The drill SHALL end when the clock reaches zero and SHALL report `kills`, `perfect` and `scenes` cleared.
+When `SimState.mode` is `drill`, the sim SHALL run a 60 000 ms clock, spawn zombies with zero speed, disable barricade damage, and set `dd` and `D` charges to 0 at the start of every scene (a drill has no magazine; see design D5). The drill SHALL end when the clock reaches zero and SHALL report `kills`, `perfect` and `scenes` cleared.
 
 #### Scenario: Wall cannot fall
 - **WHEN** a drill runs for its full duration with no input
 - **THEN** barricade HP is unchanged and the drill ends by the clock
 
 #### Scenario: Charges per scene
-- **WHEN** the player spends `dd` in scene 3
-- **THEN** scene 4 begins with `dd` at 1
+- **WHEN** a scene begins, whatever the charges read before it
+- **THEN** `dd` and `D` are 0, and a `dd` typed in the scene is refused with a reason
 
 ### Requirement: Scenes
 A drill SHALL present one scene at a time, built from the family's template with a designated target and a designated starting cursor. The scene SHALL be replaced when its target dies or when the player presses `r`. Killing a non-target zombie SHALL count as a kill and SHALL NOT clear the scene.
@@ -23,11 +23,11 @@ A drill SHALL present one scene at a time, built from the family's template with
 - **THEN** the current scene is discarded, the next scene is placed and `scenes` does not increment
 
 ### Requirement: Oracle-verified generation
-Each scene SHALL be generated from the sim RNG and accepted only if the oracle's cheapest kill for the designated target from the designated cursor uses at least one token from the family's set. The generator SHALL make at most 24 attempts per scene and on exhaustion SHALL use one of the family's fixture scenes chosen by the RNG. Every family SHALL ship at least three fixtures.
+Each scene SHALL be generated from the sim RNG and accepted only if one of the oracle's cheapest kills (the tie set, `optimalKills`) for the designated target from the designated cursor uses at least one token from the family's set; the `vertical` family SHALL also require a counted `j`/`k` or an absolute lane jump, and the `counts` family SHALL require the killing command itself to carry the count. The generator SHALL make at most 24 attempts per scene and on exhaustion SHALL use one of the family's fixture scenes chosen by the RNG. Every family SHALL ship at least three fixtures.
 
 #### Scenario: Accepted scene uses the family
 - **WHEN** a find-family scene is accepted
-- **THEN** `tokensUsed(optimalKill(...).keys)` contains one of `f` `F` `t` `T`
+- **THEN** some `o` in `optimalKills(...)` has `tokensUsed(o.keys)` containing one of `f` `F` `t` `T`, and every such `o` costs the same as `optimalKill(...)`
 
 #### Scenario: Acceptance rate
 - **WHEN** 200 scenes are generated per family under fixed seeds in the test suite
