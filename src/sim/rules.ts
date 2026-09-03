@@ -19,6 +19,20 @@ export type Outcome =
  */
 export const WASTE_ALLOWANCE = 4;
 
+/**
+ * What `x` does to a zombie's legs. A single-cell operator that erodes a word
+ * hobbles it: the first one halves its speed for good (DECISIONS #94). `x` on
+ * a seven-letter walker is still seven keystrokes to a kill, but the first of
+ * them buys you the time to make the other six - or to go and do something
+ * better.
+ */
+export const HOBBLE_FACTOR = 0.5;
+
+/** The operators that shoot legs: one cell, one shot. */
+export function isLegShot(cmd: Command): boolean {
+  return cmd.operator === 'x' || cmd.operator === 'X';
+}
+
 /** A zombie the command carved into rather than killed. */
 export interface Erosion { index: number; col: number; text: string }
 
@@ -108,11 +122,16 @@ export function planKills(cmd: Command, spans: readonly Span[], zombies: readonl
 /**
  * Which charge, if any, this command spends. null = free.
  * `dd` and `D` are the named mass tools and always cost. Anything else costs
- * only when it wastes more than WASTE_ALLOWANCE cells on empty ground.
+ * only when it wastes more than the allowance of cells on empty ground.
+ *
+ * `allowance` is a parameter rather than the constant so the store's Whetstone
+ * can raise it for one night (DECISIONS #77); everything else passes the
+ * default and reads exactly as it did.
  */
-export function chargeKindFor(cmd: Command, spans: readonly Span[], plan: Plan): 'dd' | 'D' | null {
+export function chargeKindFor(cmd: Command, spans: readonly Span[], plan: Plan,
+                              allowance = WASTE_ALLOWANCE): 'dd' | 'D' | null {
   if (cmd.operator === 'dd') return 'dd';
   if (cmd.operator === 'D') return 'D';
   if (!cmd.operator) return null;
-  return spanCells(spans) - plan.killedCells - plan.erodedCells > WASTE_ALLOWANCE ? 'D' : null;
+  return spanCells(spans) - plan.killedCells - plan.erodedCells > allowance ? 'D' : null;
 }

@@ -23,22 +23,26 @@ import type { Bus } from '../core/bus';
 import type { GameState } from '../core/state';
 import type { Zombie } from '../core/types';
 import { BARRICADE_COL, COLS, FIELD_COLS, ROWS, barricadeGlyphs } from '../core/field';
+import { SURVEY_RULER } from '../sim/traps';
 import { Rng } from '../core/rng';
 import { ATLAS_COLORS, C, CHUNK_TONES, PALETTE, RGBA, T } from './palette';
 import { GlyphAtlas, fontString } from './glyphs';
 import { ChunkAtlas, CHUNK_ROTS, CHUNK_SHAPES, FlashSprite } from './chunks';
-import { K_CHUNK, K_GLYPH, P_BLEEDS, P_GHOST, P_STICK, Particles } from './particles';
+import { K_CHUNK, K_GLYPH, P_BLEEDS, P_GHOST, P_REST, P_STICK, Particles } from './particles';
 import {
   BAND_BOTTOM, BAND_TOP, GoreLayer, Scene, lightFalloff,
 } from './scene';
 import type { SceneGeo } from './scene';
 import {
-  drawSurvivor, drawZombie, figureHeightCells, figureKind, F_RUNNER,
+  drawSurvivor, drawZombie, figureHeightCells, figureKind, F_ARMORED, F_RUNNER,
 } from './figures';
 import {
-  Fx, hash3, LANE_FLASH_MS, LANE_FLASH_WHITE_MS, MUZZLE_MS, OVERKILL_MS,
-  SHOT_MS, SWEEP_MS, TRACER_MS,
+  Fx, hash3, LANE_FLASH_MS, LANE_FLASH_WHITE_MS, MUZZLE_MS, NOTICE_MS,
+  OVERKILL_MS, SHOT_MS, SWEEP_MS, TRACER_MS,
 } from './fx';
+// The medal table is data the sim owns; the renderer reads it for the callout
+// scale and never the other way round.
+import { MULTI_KILL_MIN, medalTier } from '../sim/medals';
 
 export { PALETTE } from './palette';
 
@@ -63,7 +67,10 @@ const SCENE_SEED = 0xb10d5ce7;
 const WALL_X0 = 50.0;
 const WALL_X1 = 55.0;
 /** the survivor */
-const SURV_COL = 55.6;
+// East of the wall's east face (WALL_X1) by enough that his whole body clears
+// it — he defends the barricade from behind it, and used to be drawn standing
+// across the top of it.
+const SURV_COL = 56.9;
 const SURV_FEET_ROW = 12.2;
 
 /** a figure's head top sits this far below its word row, in cells */
@@ -76,8 +83,115 @@ const HUD_BAR_COLS = 10;
 const STRIP_COL0 = 16;
 const STRIP_COL1 = 44;
 const STRIP_ROW = -5.75;
+/** the zombies-remaining strip's height, in cells */
+const STRIP_H = 0.30;
 /** the combo counter's left edge; it grows upward from row -2.6 */
 const COMBO_COL = 46;
+/** the top row of the sky band; the field's lanes start at row 0 */
+const SKY_TOP = -BAND_TOP;
+
+/**
+ * The neighbours the callout stack has to stay clear of, exported so
+ * `tests/ui-layout.test.ts` asserts the band instead of guessing at it.
+ *
+ * `hudReach` is the rightmost column the top-left status block can occupy:
+ * the `SUPPLIES` label plus a seven-digit wallet.
+ */
+export const HUD_BOUNDS = {
+  comboCol: COMBO_COL,
+  hudReach: HUD_COL + 9.2 + 7,
+  stripBottom: STRIP_ROW + STRIP_H,
+  skyTop: SKY_TOP,
+} as const;
+
+// --- medal callouts ----------------------------------------------------------
+// A stack in the sky band, between the status block and the combo counter, so
+// a KILLIONAIRE at max scale still cannot reach either of them.
+/**
+ * How long the page takes to turn when the store opens. Long enough to read as
+ * a page and short enough that a player shopping every night never waits on it.
+ */
+export const PAGE_TURN_MS = 460;
+
+/** how long one callout stays up */
+export const CALLOUT_MS = 1100;
+/** how many are visible at once; a fourth drops the oldest */
+export const CALLOUT_MAX = 3;
+/** scale-in, then a fade over the tail */
+const CALLOUT_RISE_MS = 150;
+const CALLOUT_FADE_MS = 260;
+/** the newest sits at this row; older ones fall below it */
+const CALLOUT_ROW = -5.3;
+const CALLOUT_PITCH = 1.6;
+/**
+ * The window callouts are centered in. Its left edge clears the whole status
+ * block, including a seven-digit `SUPPLIES`; its right edge stops short of the
+ * combo counter's column. 25 cells, against a 20.2-cell worst-case box
+ * (KILLTASTROPHE at the top of the ladder).
+ */
+const CALLOUT_COL0 = 21;
+const CALLOUT_COL1 = 46;
+const CALLOUT_SCALE_MIN = 1.15;
+/** added per multi-kill rung above DOUBLE KILL */
+const CALLOUT_SCALE_STEP = 0.05;
+
+/** The window and rows the stack may use. Read by the layout test. */
+export const CALLOUT_BAND = {
+  col0: CALLOUT_COL0,
+  col1: CALLOUT_COL1,
+  row0: CALLOUT_ROW,
+  pitch: CALLOUT_PITCH,
+} as const;
+
+/** One live callout. `at` is the renderer clock in ms when it arrived. */
+export interface Callout { name: string; at: number }
+
+/** Where one callout goes, once the animation is resolved. */
+export interface CalloutBox { text: string; col: number; row: number; scale: number; alpha: number }
+
+/** Text scale for a medal: style medals are the floor, multi-kills climb. */
+export function calloutScale(name: string): number {
+  const tier = medalTier(name);
+  return tier === 0
+    ? CALLOUT_SCALE_MIN
+    : CALLOUT_SCALE_MIN + (tier - MULTI_KILL_MIN) * CALLOUT_SCALE_STEP;
+}
+
+/**
+ * Lay out the callout stack, newest first and newest on top. Pure arithmetic
+ * so `tests/ui-layout.test.ts` can assert the band without a canvas: nothing
+ * here may leave the sky band or cross into the combo counter's column.
+ */
+export function calloutLayout(
+  stack: readonly Callout[], now: number, out: CalloutBox[] = [],
+): CalloutBox[] {
+  out.length = 0;
+  for (let i = 0; i < stack.length && out.length < CALLOUT_MAX; i++) {
+    const c = stack[i];
+    const age = now - c.at;
+    if (age < 0 || age >= CALLOUT_MS) continue;
+    const full = calloutScale(c.name);
+    // A brief punch in on arrival; never overshoots, so the steady state is
+    // also the widest the box ever gets.
+    const rise = age < CALLOUT_RISE_MS ? 0.6 + 0.4 * (age / CALLOUT_RISE_MS) : 1;
+    const left = CALLOUT_MS - age;
+    const scale = full * rise;
+    const w = c.name.length * scale;
+    // Centered in the window, then pulled back inside it. A name so long that
+    // both clamps fight is a name the layout test refuses.
+    let col = (CALLOUT_COL0 + CALLOUT_COL1 - w) / 2;
+    if (col + w > CALLOUT_COL1) col = CALLOUT_COL1 - w;
+    if (col < CALLOUT_COL0) col = CALLOUT_COL0;
+    out.push({
+      text: c.name,
+      col,
+      row: CALLOUT_ROW + out.length * CALLOUT_PITCH,
+      scale,
+      alpha: left < CALLOUT_FADE_MS ? left / CALLOUT_FADE_MS : 1,
+    });
+  }
+  return out;
+}
 
 // --- feel --------------------------------------------------------------------
 /** words start jittering this many columns from the wall */
@@ -105,38 +219,16 @@ WALL_LEVEL_OF[45] = 2;  // '-'
 WALL_LEVEL_OF[46] = 1;  // '.'
 WALL_LEVEL_OF[32] = 0;  // ' '
 
-// --- the plank table -------------------------------------------------------------
-// 16 lanes x 3 leaning planks, laid out once from hash3 so the heap is the same
-// every frame and every run. Fractions of the wall width / lane height; the
-// angle is pre-resolved to cos/sin so the draw loop does no trig.
-const PLANKS_PER_LANE = 3;
-const PLANK_N = ROWS * PLANKS_PER_LANE;
-const PLANK_CX = new Float32Array(PLANK_N);
-const PLANK_CY = new Float32Array(PLANK_N);
-const PLANK_LEN = new Float32Array(PLANK_N);
-const PLANK_TH = new Float32Array(PLANK_N);
-const PLANK_COS = new Float32Array(PLANK_N);
-const PLANK_SIN = new Float32Array(PLANK_N);
-const PLANK_TONE = new Uint8Array(PLANK_N);
-const PLANK_TONES = ['#4a4034', '#5a4d3d', '#3e3529', '#514332'];
-for (let r = 0; r < ROWS; r++) {
-  for (let i = 0; i < PLANKS_PER_LANE; i++) {
-    const k = r * PLANKS_PER_LANE + i;
-    const h = hash3(r, i, 0x9e);
-    PLANK_CX[k] = 0.30 + i * 0.22 + ((h & 255) / 255 - 0.5) * 0.14;
-    PLANK_CY[k] = 0.5 + (((h >>> 8) & 255) / 255 - 0.5) * 0.5;
-    PLANK_LEN[k] = 0.50 + ((h >>> 16) & 255) / 255 * 0.30;
-    PLANK_TH[k] = 0.24 + ((h >>> 24) & 15) / 15 * 0.14;
-    const ang = (((h >>> 4) & 255) / 255 - 0.5) * 2 * (18 * Math.PI / 180);
-    PLANK_COS[k] = Math.cos(ang);
-    PLANK_SIN[k] = Math.sin(ang);
-    PLANK_TONE[k] = (h >>> 12) & 3;
-  }
-}
-const PROP_CHAIN = 0;
-const PROP_DOOR = 1;
-const PROP_FRIDGE = 2;
-const PROP_TYRES = 3;
+// --- the timber ----------------------------------------------------------------
+// Four plank tones, picked per (lane, slot) from hash3 so the wall is the same
+// every frame and every run.
+const PLANK_TONES = ['#4a4034', '#5c4e3c', '#372e24', '#524536'];
+/** planks per lane when the wall is whole, and their top edge as a fraction of the lane */
+const PLANK_SLOTS = 3;
+const PLANK_Y = new Float32Array([0.05, 0.37, 0.69]);
+const PLANK_TH = 0.26;
+/** lanes per cross-braced panel */
+const PANEL_LANES = 4;
 
 // bracket / quote char codes, compared numerically so nothing is allocated
 function isOpenCode(c: number): boolean {
@@ -153,6 +245,8 @@ for (let i = 0; i < 128; i++) CHARS[i] = String.fromCharCode(i);
 interface ZPos {
   row: number; col: number; len: number; kindIdx: number;
   text: string; seen: number;
+  /** letters shot off this zombie so far; each one costs it a body part */
+  lost: number;
 }
 
 export class Renderer {
@@ -160,6 +254,8 @@ export class Renderer {
 
   /** Set by main.ts each frame before drawGame(); Vim's showcmd string. */
   pendingCmd = '';
+  /** Why the last command was refused. Drawn while `fx.notice` runs. */
+  private noticeText = '';
   /** 'off' removes every drop of blood and every chunk. Default 'full'. */
   gore: GoreLevel = 'full';
   /** Vim's `nu` / `rnu`. The gutter is 1-based, so `7G` lands on the lane marked 7. */
@@ -205,6 +301,8 @@ export class Renderer {
 
   private lastCursorRow = 0;
   private frontLane = ROWS - 1;
+  /** lanes with at least one zombie in them this frame, as a bitmask */
+  private laneMask = 0;
   /** floodlight brightness per column, 0..1; figures pick their shade from it */
   private lightAt = new Float32Array(COLS);
   private gunX = 0;
@@ -217,12 +315,18 @@ export class Renderer {
   private dStr = '';
   private waveStr = '';
   private comboStr = '';
+  private supStr = '0';
   private hHp = -1; private hDd = -1; private hD = -1;
-  private hWave = -1; private hCombo = -1;
+  private hWave = -1; private hCombo = -1; private hSup = -1;
+  /** live medal callouts, newest first; at most CALLOUT_MAX are drawn */
+  private callouts: Callout[] = [];
+  private calloutBoxes: CalloutBox[] = [];
   private wallGlyphs = '';
   private wallHp = -1;
   /** per-lane wall level 4..0, decoded from wallGlyphs each frame */
   private wallLevels = new Uint8Array(ROWS);
+  /** set by drawWords when the cursor sits on a word, so the crosshair inverts */
+  private cursorOnWord = false;
   private lastPanelPaper = false;
 
   constructor(canvas: HTMLCanvasElement, bus: Bus) {
@@ -258,8 +362,18 @@ export class Renderer {
       if (zp) this.burst(zp, splash, this.hCombo);
     });
 
+    bus.on('medal', (e) => {
+      this.callouts.unshift({ name: e.name, at: this.now });
+      if (this.callouts.length > CALLOUT_MAX) this.callouts.length = CALLOUT_MAX;
+    });
+
     bus.on('combo', () => { this.fx.popCombo(); });
-    bus.on('combo_break', () => { this.shatterCombo(); });
+    bus.on('combo_break', (e) => {
+      this.shatterCombo();
+      // A refused command has nothing else to show for itself - no shot, no
+      // kill, no movement - so it gets a line (DECISIONS #86).
+      if (e.refused) { this.noticeText = e.reason; this.fx.stampNotice(); }
+    });
 
     bus.on('shot', (e) => {
       this.fx.addShot(e.row, e.colStart, e.colEnd, e.hits);
@@ -413,9 +527,14 @@ export class Renderer {
     this.indexZombies(zs);
 
     if (this.gore !== 'off') this.goreLayer.blit(this.ctx);
+    this.drawLanes();
     this.drawBarricade(state);
+    // Under the figures and under the words: a zombie standing on a wire has
+    // to stay readable, or you cannot tell what kills it.
+    this.drawSurvey(state);
+    this.drawTraps(state);
     this.drawFigures(zs, state.sim.time);
-    this.drawWords(zs);
+    this.drawWords(zs, state);
     this.drawSurvivorAndGun(state);
     this.drawShots();
     this.drawParticles();
@@ -435,32 +554,67 @@ export class Renderer {
     }
 
     this.drawGutter(state);
-    if (state.phase !== 'title') this.drawHud(state);
+    // No HUD behind the menu card; `title` is the old name for `menu`.
+    if (state.phase !== 'menu' && state.phase !== 'title') this.drawHud(state);
     this.showcmd(this.pendingCmd);
     this.drawOverkill();
+    this.drawNotice();
   }
 
   private indexZombies(zs: readonly Zombie[]): void {
     const map = this.zpos;
     let front = -1;
     let frontLane = this.frontLane;
+    let mask = 0;
     for (let i = 0; i < zs.length; i++) {
       const z = zs[i];
+      if (z.row >= 0 && z.row < ROWS) mask |= 1 << z.row;
       let p = map.get(z.id);
+      const n = z.text.length;
       if (p === undefined) {
-        p = this.zfree.pop() ?? { row: 0, col: 0, len: 0, kindIdx: 0, text: '', seen: 0 };
+        p = this.zfree.pop() ?? { row: 0, col: 0, len: 0, kindIdx: 0, text: '', seen: 0, lost: 0 };
+        p.lost = 0; p.len = n; p.col = z.col; p.kindIdx = figureKind(z.kind, n);
         map.set(z.id, p);
+      } else if (n < p.len && p.kindIdx !== F_ARMORED) {
+        // Letters came off since the last frame, so a piece of the figure goes
+        // with them. Armor coming off is brackets, not flesh, and is skipped.
+        const d = p.len - n;
+        p.lost += d;
+        this.maim(p, z, d);
       }
-      p.row = z.row; p.col = z.col; p.text = z.text; p.len = z.text.length;
+      p.row = z.row; p.col = z.col; p.text = z.text; p.len = n;
       p.kindIdx = figureKind(z.kind, z.text.length);
       p.seen = this.frame;
       const nose = z.col + z.text.length;
       if (nose > front && z.row >= 0 && z.row < ROWS) { front = nose; frontLane = z.row; }
     }
     this.frontLane = frontLane;
+    this.laneMask = mask;
     // stale entries are recycled lazily; a kill resolves against the frame that
     // last saw the zombie, so pruning must lag by at least one frame
     if ((this.frame & 63) === 0) map.forEach(this.pruneFn);
+  }
+
+  // -- the lanes -------------------------------------------------------------
+
+  /**
+   * Every other lane gets a faint dark band across the walkable columns, so
+   * two words in neighbouring lanes read as neighbours and a word two lanes
+   * down reads as two lanes down. Figures hang three lanes below their word,
+   * which is what made `d2j` a guess (DECISIONS #95). The band is the word's
+   * row - the lane the sim means - not the row the feet land on.
+   */
+  private drawLanes(): void {
+    const ctx = this.ctx;
+    const m = this.m;
+    const w = FIELD_COLS * m.cw;
+    const eh = Math.max(1, m.ch * 0.04);
+    ctx.fillStyle = RGBA.laneBand;
+    for (let r = 1; r < ROWS; r += 2) ctx.fillRect(m.ox, m.oy + r * m.ch, w, m.ch);
+    // a pale hairline on the top of every lane, so the bands read as a ruled
+    // page and not as shadows in the grass
+    ctx.fillStyle = RGBA.laneBandEdge;
+    for (let r = 0; r < ROWS; r++) ctx.fillRect(m.ox, m.oy + r * m.ch, w, eh);
   }
 
   // -- the horde -------------------------------------------------------------
@@ -497,7 +651,9 @@ export class Renderer {
           shade += boost;
           if (shade > 1) shade = 1;
         }
-        drawZombie(ctx, cxp, feetY, m.ch, k, step, twitch, jitter, bloody, shade, z.id);
+        const zp = this.zpos.get(z.id);
+        drawZombie(ctx, cxp, feetY, m.ch, k, step, twitch, jitter, bloody, shade, z.id,
+          zp === undefined ? 0 : zp.lost, z.hobbled === true);
       }
     }
   }
@@ -521,10 +677,18 @@ export class Renderer {
   /** Words last, on their scrim, so they are always the crispest thing here.
    *  Two passes — every scrim, then every glyph — so a neighbouring word's
    *  scrim can never be painted over this word's letters. */
-  private drawWords(zs: readonly Zombie[]): void {
+  private drawWords(zs: readonly Zombie[], state: GameState): void {
     const ctx = this.ctx;
     const m = this.m;
     const group = (this.frame / 3) | 0;
+    // The word under the cursor is the one your next command lands on, so it
+    // is printed as a banner — amber block, ink letters — the way Vim inverts
+    // the cell under a block cursor. Not while placing in the store: the play
+    // cursor is not what `<CR>` acts on there.
+    const placing = state.phase === 'shop' && state.sim.shop.mode === 'place';
+    const cr = placing ? -1 : state.cursor.row;
+    const cc = state.cursor.col;
+    this.cursorOnWord = false;
 
     for (let i = 0; i < zs.length; i++) {
       const z = zs[i];
@@ -537,6 +701,12 @@ export class Renderer {
       const y = m.oy + z.row * m.ch;
       const x0 = m.ox + c0 * m.cw;
       const w = (c1 - c0) * m.cw;
+      if (z.row === cr && cc >= z.col && cc < z.col + n) {
+        this.cursorOnWord = true;
+        this.pill(x0 - m.cw * 0.40, y + m.ch * 0.03, w + m.cw * 0.80, m.ch * 0.90,
+          m.ch * 0.10, PALETTE.amber);
+        continue;
+      }
       this.pill(x0 - m.cw * 0.55, y - m.ch * 0.06, w + m.cw * 1.1, m.ch * 1.02,
         m.ch * 0.28, RGBA.scrimSoft);
       this.pill(x0 - m.cw * 0.26, y + m.ch * 0.05, w + m.cw * 0.52, m.ch * 0.82,
@@ -550,10 +720,11 @@ export class Renderer {
       const n = t.length;
       if (z.col + n <= 0 || z.col >= FIELD_COLS) continue;
 
+      const hot = z.row === cr && cc >= z.col && cc < z.col + n;
       const heavy = z.kind === 'bloater' || n >= 8;
       const y = m.oy + z.row * m.ch;
-      const base = heavy ? C.SICK_DARK : C.BONE;
-      const dim = z.kind === 'crawler' || n <= 1;
+      const base = hot ? C.INK : heavy ? C.SICK_DARK : C.BONE;
+      const dim = !hot && (z.kind === 'crawler' || n <= 1);
       if (dim) ctx.globalAlpha = CRAWLER_ALPHA;
 
       const dist = BARRICADE_COL - (z.col + n);
@@ -565,7 +736,7 @@ export class Renderer {
         if (col < 0 || col >= FIELD_COLS) continue;
         let code = t.charCodeAt(k);
         let slot: number = base;
-        if (z.kind === 'armored' &&
+        if (!hot && z.kind === 'armored' &&
             ((k === 0 && isOpenCode(code)) || (k === n - 1 && isCloseCode(code)))) {
           slot = C.GREEN;
         }
@@ -597,10 +768,14 @@ export class Renderer {
   // -- the barricade ---------------------------------------------------------
 
   /**
-   * The heap. Per lane, 2..3 leaning planks from the module-level plank table
-   * plus one large prop per group of lanes; the wall level 4..0 from
-   * `barricadeGlyphs` decides how much of it is still standing. Everything is
-   * keyed on (lane, index) so the heap is identical every frame for a given HP.
+   * A timber barricade seen from the field: two full-height posts with
+   * horizontal planks nailed across them lane by lane, an X of cross-braces
+   * over every four lanes, a coil of barbed wire down the west face, and
+   * sandbags heaped at the foot. The wall level 4..0 from `barricadeGlyphs`
+   * decides how many planks a lane still has. Everything is keyed on
+   * (lane, slot) so the wall is identical every frame for a given HP.
+   * Ref: the docs/ref sheet — "Timber Barricade (Side View)", "Sandbags",
+   * "Barbed Wire Coils".
    */
   private drawBarricade(state: GameState): void {
     const m = this.m;
@@ -615,232 +790,225 @@ export class Renderer {
     const x0 = m.ox + WALL_X0 * m.cw;
     const x1 = m.ox + WALL_X1 * m.cw;
     const w = x1 - x0;
+    const ch = m.ch;
     const top = m.oy;
+    const wallH = ROWS * ch;
 
-    // the dark behind the heap — every gap opens onto this
+    // posts: west and east, full height; planks span centre to centre
+    const pw = Math.max(2, w * 0.11);
+    const postW = x0 + w * 0.16;
+    const postE = x1 - w * 0.30;
+    const in0 = postW + pw * 0.5;
+    const in1 = postE + pw * 0.5;
+    const span = in1 - in0;
+
+    // the dark behind the wall — every gap opens onto this
     ctx.fillStyle = PALETTE.void_;
-    ctx.fillRect(x0 + w * 0.10, top, w * 0.90, ROWS * m.ch);
+    ctx.fillRect(postW, top - ch * 0.3, x1 - postW, wallH + ch * 0.6);
 
-    // the upright the wire is strung on, east side, full height
-    ctx.fillStyle = PALETTE.timberShadow;
-    ctx.fillRect(x1 - w * 0.26, top - m.ch * 0.4, Math.max(2, m.cw * 0.32), ROWS * m.ch + m.ch * 0.4);
-    ctx.fillStyle = 'rgba(107,93,74,0.30)';
-    ctx.fillRect(x1 - w * 0.26, top - m.ch * 0.4, Math.max(1, m.cw * 0.10), ROWS * m.ch + m.ch * 0.4);
-
-    // levels per lane, reused by the props
+    // levels per lane, reused by the braces and the wire
     const lv = this.wallLevels;
     for (let r = 0; r < ROWS; r++) {
       const code = r < g.length ? g.charCodeAt(r) : 32;
       lv[r] = code < 128 ? WALL_LEVEL_OF[code] : 4;
     }
 
-    // planks
+    // planks, lane by lane
     for (let r = 0; r < ROWS; r++) {
       const lvl = lv[r];
-      const y = top + r * m.ch;
+      const y = top + r * ch;
+      for (let i = 0; i < PLANK_SLOTS; i++) {
+        // which slots survive at each level: 4 all, 3 two, 2 one, 1 none
+        const whole = lvl === 4 || (lvl === 3 && i !== 1) || (lvl === 2 && i === 1);
+        if (whole) { this.plank(r, i, in0, y, span, ch, 0); continue; }
+        if (lvl === 0 && i === 1) continue;
+        // a stub left nailed to one post, splintered at the free end
+        const hs = hash3(r, i, 0x51);
+        const frac = 0.16 + ((hs >>> 8) & 15) / 15 * 0.22;
+        if (hs & 1) this.plank(r, i, in0, y, span * frac, ch, 1);
+        else this.plank(r, i, in1 - span * frac, y, span * frac, ch, -1);
+      }
       if (lvl === 0) {
-        // breach: a hole. Splintered plank ends at either side, a fallen plank
-        // on the ground, and a faint red glow on the west lip to pull the eye.
-        ctx.fillStyle = PALETTE.timberShadow;
-        ctx.fillRect(x0 + w * 0.10, y + m.ch * 0.2, w * 0.14, m.ch * 0.30);
-        ctx.fillRect(x1 - w * 0.36, y + m.ch * 0.55, w * 0.10, m.ch * 0.26);
-        this.plank(r, 0, x0, y + m.ch * 0.55, w, m.ch, 0.6);
+        // breach: a faint red glow on the west lip to pull the eye
         ctx.fillStyle = RGBA.breachGlow;
-        ctx.fillRect(x0 + w * 0.10, y, w * 0.30, m.ch);
-        continue;
-      }
-      const count = lvl === 4 ? 3 : lvl === 1 ? 1 : 2;
-      for (let i = 0; i < count; i++) {
-        this.plank(r, i, x0, y, w, m.ch, lvl === 1 ? 0.45 : 1);
-      }
-      if (lvl <= 2) {
-        // splinters off the ragged west face
-        ctx.fillStyle = PALETTE.timber;
-        for (let sp = 0; sp < 3; sp++) {
-          const hs = hash3(r, sp, 11);
-          const sy = y + (sp + 0.15) * (m.ch / 3.4);
-          ctx.fillRect(x0 + w * (0.12 + ((hs >>> 4) & 7) * 0.02), sy,
-            w * 0.08 * ((hs & 15) / 15 + 0.3), m.ch * 0.14);
-        }
+        ctx.fillRect(x0, y, w * 0.6, ch);
       }
     }
 
-    // props, one per lane group; a prop is as broken as its worst lane
-    this.prop(PROP_CHAIN, 0, 2, x0, w, top, lv);
-    this.prop(PROP_DOOR, 3, 5, x0, w, top, lv);
-    this.prop(PROP_FRIDGE, 8, 10, x0, w, top, lv);
-    this.prop(PROP_TYRES, 13, 15, x0, w, top, lv);
+    // cross-braces: an X over each panel of four lanes, both diagonals while
+    // the panel stands, one when it is nearly gone, none once a lane is breached
+    const braceTh = Math.max(1, ch * 0.20);
+    for (let p = 0; p * PANEL_LANES < ROWS; p++) {
+      const r0 = p * PANEL_LANES;
+      let min = 4;
+      for (let r = r0; r < r0 + PANEL_LANES && r < ROWS; r++) if (lv[r] < min) min = lv[r];
+      if (min === 0) continue;
+      const ya = top + r0 * ch + ch * 0.12;
+      const yb = top + (r0 + PANEL_LANES) * ch - ch * 0.12;
+      ctx.lineCap = 'butt';
+      ctx.strokeStyle = '#5a4d3d';
+      ctx.lineWidth = braceTh;
+      ctx.beginPath();
+      ctx.moveTo(in0, ya); ctx.lineTo(in1, yb);
+      if (min >= 2) { ctx.moveTo(in1, ya); ctx.lineTo(in0, yb); }
+      ctx.stroke();
+      ctx.strokeStyle = PALETTE.timberHi;
+      ctx.lineWidth = Math.max(1, ch * 0.04);
+      ctx.beginPath();
+      ctx.moveTo(in0, ya - braceTh * 0.5); ctx.lineTo(in1, yb - braceTh * 0.5);
+      if (min >= 2) { ctx.moveTo(in1, ya - braceTh * 0.5); ctx.lineTo(in0, yb - braceTh * 0.5); }
+      ctx.stroke();
+    }
 
-    this.drawSandbags(x0, w, top);
-    this.drawWire(x0, x1, top, lv);
+    // the posts, in front of the plank ends
+    this.post(postW, top - ch * 0.35, pw, wallH + ch * 0.55);
+    this.post(postE, top - ch * 0.5, pw, wallH + ch * 0.7);
 
-    // caked blood at the foot of the heap, accumulated across the run
+    this.drawWire(postW + pw * 0.35, top, lv);
+    this.drawSandbags(x0 + w * 0.02, top + ROWS * ch, 4, 3, PALETTE.sandbag);
+    this.drawSandbags(x0 + w * 0.05, top + 8 * ch, 3, 2, PALETTE.sandbag);
+
+    // caked blood at the foot of the wall, accumulated across the run
     if (this.gore !== 'off') {
-      ctx.fillStyle = PALETTE.bloodDry;
       for (let r = 0; r < ROWS; r++) {
         const v = this.wallGore[r];
         if (v <= 0.01) continue;
-        ctx.globalAlpha = Math.min(0.62, v * 0.62);
+        const cy = top + (r + 0.72) * ch;
+        // the dry cake
+        ctx.fillStyle = PALETTE.bloodDry;
+        ctx.globalAlpha = Math.min(0.80, v * 0.80);
         ctx.beginPath();
-        ctx.ellipse(x0 + w * 0.28, top + (r + 0.72) * m.ch,
-          w * 0.30 + m.cw * 0.35, m.ch * (0.20 + v * 0.16), 0, 0, Math.PI * 2);
+        ctx.ellipse(x0 + w * 0.28, cy,
+          w * 0.34 + m.cw * 0.45, ch * (0.22 + v * 0.20), 0, 0, Math.PI * 2);
         ctx.fill();
+        // wet red on top once it has really soaked, running down the planks
+        if (v > 0.35) {
+          ctx.fillStyle = PALETTE.blood;
+          ctx.globalAlpha = Math.min(0.55, (v - 0.35) * 0.85);
+          ctx.beginPath();
+          ctx.ellipse(x0 + w * 0.26, cy - ch * 0.04,
+            w * 0.20 + m.cw * 0.30, ch * (0.12 + v * 0.12), 0, 0, Math.PI * 2);
+          ctx.fill();
+          const hs = hash3(r, 0x6b, 0x1d);
+          const dx = x0 + w * (0.12 + ((hs & 15) / 15) * 0.30);
+          ctx.fillRect(dx, cy - ch * 0.30, Math.max(1, m.cw * 0.10), ch * (0.30 + v * 0.35));
+        }
       }
       ctx.globalAlpha = 1;
     }
   }
 
-  /** One leaning plank from the table: a filled quad and a lit top edge. */
-  private plank(r: number, i: number, x0: number, y: number, w: number, ch: number, lenScale: number): void {
+  /** One horizontal plank: a slab with a lit top edge, a dark under edge, and
+   *  a nail at each end. `splinter` is 0 for a whole plank, +1 for a stub whose
+   *  free end is east, -1 for one whose free end is west. */
+  private plank(r: number, i: number, x: number, laneY: number, len: number, ch: number, splinter: number): void {
+    if (len <= 0) return;
     const ctx = this.ctx;
-    const k = r * PLANKS_PER_LANE + i;
-    const cx = x0 + w * PLANK_CX[k];
-    const cy = y + ch * PLANK_CY[k];
-    const hx = w * PLANK_LEN[k] * 0.5 * lenScale;
-    const hy = ch * PLANK_TH[k] * 0.5;
-    const c = PLANK_COS[k], s = PLANK_SIN[k];
-    // corners: along the plank (±hx) and across it (±hy)
-    const ax = cx - hx * c + hy * s, ay = cy - hx * s - hy * c;   // top-west
-    const bx = cx + hx * c + hy * s, by = cy + hx * s - hy * c;   // top-east
-    const dx = cx + hx * c - hy * s, dy = cy + hx * s + hy * c;   // bottom-east
-    const ex = cx - hx * c - hy * s, ey = cy - hx * s + hy * c;   // bottom-west
-    ctx.fillStyle = PLANK_TONES[PLANK_TONE[k]];
-    ctx.beginPath();
-    ctx.moveTo(ax, ay); ctx.lineTo(bx, by); ctx.lineTo(dx, dy); ctx.lineTo(ex, ey);
-    ctx.closePath();
-    ctx.fill();
-    ctx.strokeStyle = PALETTE.timberHi;
-    ctx.lineWidth = Math.max(1, ch * 0.05);
-    ctx.beginPath();
-    ctx.moveTo(ax, ay); ctx.lineTo(bx, by);
-    ctx.stroke();
-  }
-
-  /** A large piece of junk spanning lanes r0..r1. Full at level >= 3, an
-   *  outline with the fill knocked out at level 2, gone below that. */
-  private prop(kind: number, r0: number, r1: number, x0: number, w: number, top: number, lv: Uint8Array): void {
-    let lvl = 4;
-    for (let r = r0; r <= r1; r++) if (lv[r] < lvl) lvl = lv[r];
-    if (lvl <= 1) return;
-    const outline = lvl === 2;
-    const ctx = this.ctx;
-    const m = this.m;
-    const y = top + r0 * m.ch;
-    const h = (r1 - r0 + 1) * m.ch;
-    ctx.lineWidth = Math.max(1, m.ch * 0.06);
-    if (kind === PROP_CHAIN) {
-      // a chain-link panel: frame + diagonal lattice
-      const px = x0 + w * 0.18, pw = w * 0.62;
-      const py = y + m.ch * 0.15, ph = h - m.ch * 0.3;
-      ctx.strokeStyle = PALETTE.chain;
-      ctx.strokeRect(px, py, pw, ph);
-      if (!outline) {
-        ctx.lineWidth = Math.max(1, m.ch * 0.03);
-        ctx.beginPath();
-        const n = 7;
-        for (let i = 0; i <= n; i++) {
-          const f = i / n;
-          ctx.moveTo(px, py + ph * f); ctx.lineTo(px + pw * (1 - f), py + ph);
-          ctx.moveTo(px + pw * f, py); ctx.lineTo(px + pw, py + ph * (1 - f));
-          ctx.moveTo(px, py + ph * f); ctx.lineTo(px + pw * f, py);
-          ctx.moveTo(px + pw * f, py + ph); ctx.lineTo(px + pw, py + ph * f);
-        }
-        ctx.stroke();
-      }
-    } else if (kind === PROP_DOOR) {
-      // a car door, rusted, window up
-      const px = x0 + w * 0.14, pw = w * 0.70;
-      const py = y + m.ch * 0.2, ph = h - m.ch * 0.4;
-      if (outline) { ctx.strokeStyle = PALETTE.rust; ctx.strokeRect(px, py, pw, ph); return; }
-      ctx.fillStyle = PALETTE.rust;
-      ctx.fillRect(px, py, pw, ph);
-      ctx.fillStyle = PALETTE.void_;
-      ctx.fillRect(px + pw * 0.12, py + ph * 0.08, pw * 0.76, ph * 0.36);   // window
-      ctx.fillStyle = '#7a5a3a';
-      ctx.fillRect(px, py, pw, Math.max(1, ph * 0.03));                     // lit top edge
-      ctx.fillStyle = '#2a1c12';
-      ctx.fillRect(px + pw * 0.62, py + ph * 0.58, pw * 0.22, Math.max(1, ph * 0.06)); // handle
-    } else if (kind === PROP_FRIDGE) {
-      // a fridge on its side would be wider than the heap; upright it is
-      const px = x0 + w * 0.22, pw = w * 0.56;
-      const py = y + m.ch * 0.1, ph = h - m.ch * 0.2;
-      if (outline) { ctx.strokeStyle = '#565a5e'; ctx.strokeRect(px, py, pw, ph); return; }
-      ctx.fillStyle = '#565a5e';
-      ctx.fillRect(px, py, pw, ph);
-      ctx.fillStyle = '#3d4044';
-      ctx.fillRect(px, py + ph * 0.38, pw, Math.max(1, ph * 0.02));         // door seam
-      ctx.fillRect(px + pw * 0.10, py + ph * 0.10, Math.max(1, pw * 0.06), ph * 0.22); // handles
-      ctx.fillRect(px + pw * 0.10, py + ph * 0.46, Math.max(1, pw * 0.06), ph * 0.40);
-      ctx.fillStyle = '#6a6e72';
-      ctx.fillRect(px, py, pw, Math.max(1, ph * 0.02));
-    } else {
-      // a stack of tyres
-      const cx = x0 + w * 0.46;
-      const rx = w * 0.30, ry = m.ch * 0.42;
-      for (let t = 0; t < 3; t++) {
-        const cy = y + h - m.ch * (0.5 + t * 0.9);
-        if (outline) {
-          ctx.strokeStyle = '#22252a';
-          ctx.beginPath(); ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2); ctx.stroke();
-          continue;
-        }
-        ctx.fillStyle = '#141618';
-        ctx.beginPath(); ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2); ctx.fill();
-        ctx.fillStyle = '#22252a';
-        ctx.beginPath(); ctx.ellipse(cx, cy - ry * 0.15, rx * 0.5, ry * 0.32, 0, 0, Math.PI * 2); ctx.fill();
-      }
+    const hs = hash3(r, i, 0x9e);
+    const th = ch * PLANK_TH;
+    const y = laneY + ch * PLANK_Y[i] + ((hs & 15) / 15 - 0.5) * ch * 0.05;
+    const edge = th * 0.16 < 1 ? 1 : th * 0.16;
+    ctx.fillStyle = PLANK_TONES[(hs >>> 4) & 3];
+    ctx.fillRect(x, y, len, th);
+    ctx.fillStyle = PALETTE.timberHi;
+    ctx.fillRect(x, y, len, edge);
+    ctx.fillStyle = PALETTE.timberShadow;
+    ctx.fillRect(x, y + th - edge, len, edge);
+    // a knot or a crack on some planks
+    if (((hs >>> 8) & 7) === 0) {
+      ctx.fillRect(x + len * (0.3 + ((hs >>> 12) & 7) * 0.06), y + th * 0.35, len * 0.10, edge);
+    }
+    const nail = ch * 0.06 < 1 ? 1 : ch * 0.06;
+    ctx.fillStyle = '#15120e';
+    if (splinter <= 0) ctx.fillRect(x + len * 0.06, y + th * 0.5 - nail * 0.5, nail, nail);
+    if (splinter >= 0) ctx.fillRect(x + len - len * 0.06 - nail, y + th * 0.5 - nail * 0.5, nail, nail);
+    if (splinter !== 0) {
+      // the torn end: a jag of wood past the break
+      const fx = splinter > 0 ? x + len : x;
+      ctx.fillStyle = PLANK_TONES[(hs >>> 4) & 3];
+      ctx.beginPath();
+      ctx.moveTo(fx, y);
+      ctx.lineTo(fx + splinter * len * 0.35, y + th * 0.30);
+      ctx.lineTo(fx, y + th * 0.55);
+      ctx.lineTo(fx + splinter * len * 0.18, y + th * 0.8);
+      ctx.lineTo(fx, y + th);
+      ctx.closePath();
+      ctx.fill();
     }
   }
 
-  private drawSandbags(x0: number, w: number, top: number): void {
+  /** A post: dark timber with a lit east face and a cap. */
+  private post(x: number, y: number, pw: number, h: number): void {
+    const ctx = this.ctx;
+    ctx.fillStyle = PALETTE.timberShadow;
+    ctx.fillRect(x, y, pw, h);
+    ctx.fillStyle = '#5a4d3d';
+    ctx.fillRect(x + pw * 0.62, y, pw * 0.38, h);
+    ctx.fillStyle = PALETTE.timberHi;
+    ctx.fillRect(x - pw * 0.15, y, pw * 1.3, Math.max(1, pw * 0.5));
+  }
+
+  /** Sandbags heaped against the wall: `base` bags in the bottom course,
+   *  each course above one bag narrower, centred on `cx`. */
+  private drawSandbags(cx: number, baseY: number, base: number, courses: number, tone: string): void {
     const ctx = this.ctx;
     const m = this.m;
-    ctx.fillStyle = PALETTE.sandbag;
-    for (let r = ROWS - 4; r < ROWS; r++) {
-      for (let s = 0; s < 3; s++) {
-        const h = hash3(r, s, 29);
-        const x = x0 + w * (0.02 + s * 0.11) + ((h & 15) / 15 - 0.5) * m.cw * 0.2;
-        const y = top + r * m.ch + m.ch * (0.10 + (s & 1) * 0.40);
+    const bw = m.cw * 1.05;
+    const bh = m.ch * 0.44;
+    for (let c = 0; c < courses; c++) {
+      const n = base - c;
+      if (n <= 0) break;
+      const cy = baseY - bh * 0.5 - c * bh * 0.82;
+      for (let i = 0; i < n; i++) {
+        const hs = hash3(c, i, 0x5b);
+        const x = cx + (i - (n - 1) * 0.5) * bw * 0.96 + ((hs & 15) / 15 - 0.5) * bw * 0.08;
+        const y = cy + (((hs >>> 4) & 15) / 15 - 0.5) * bh * 0.10;
+        ctx.fillStyle = tone;
         ctx.beginPath();
-        ctx.ellipse(x, y + m.ch * 0.22, m.cw * 0.62, m.ch * 0.22, 0, 0, Math.PI * 2);
+        ctx.ellipse(x, y, bw * 0.52, bh * 0.50, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = '#3d392c';
+        ctx.beginPath();
+        ctx.ellipse(x, y + bh * 0.12, bw * 0.50, bh * 0.36, 0, 0, Math.PI);
+        ctx.fill();
+        ctx.fillStyle = '#726b52';
+        ctx.beginPath();
+        ctx.ellipse(x + bw * 0.06, y - bh * 0.14, bw * 0.30, bh * 0.16, 0, Math.PI, Math.PI * 2);
         ctx.fill();
       }
     }
-    ctx.strokeStyle = 'rgba(0,0,0,0.35)';
-    ctx.lineWidth = Math.max(1, m.ch * 0.035);
-    ctx.beginPath();
-    for (let r = ROWS - 4; r < ROWS; r++) {
-      ctx.moveTo(x0 - m.cw * 0.6, top + r * m.ch + m.ch * 0.5);
-      ctx.lineTo(x0 + w * 0.3, top + r * m.ch + m.ch * 0.5);
-    }
-    ctx.stroke();
   }
 
-  private drawWire(x0: number, x1: number, top: number, lv: Uint8Array): void {
+  /** A coil of barbed wire down the west face: a run of narrow rings, with a
+   *  barb glinting on every other one. Skipped where a lane is breached. */
+  private drawWire(x: number, top: number, lv: Uint8Array): void {
     const ctx = this.ctx;
     const m = this.m;
-    const w = x1 - x0;
-    const wa = x0 + w * 0.60, wb = x1 - w * 0.16;
+    const r = m.ch * 0.30;
+    const pitch = m.ch * 0.5;
     ctx.strokeStyle = PALETTE.wire;
-    ctx.lineWidth = Math.max(1, m.ch * 0.03);
+    ctx.lineWidth = Math.max(1, m.ch * 0.035);
     ctx.beginPath();
-    for (let r = 0; r <= ROWS; r++) {
-      const x = (r & 1) === 0 ? wa : wb;
-      const y = top + r * m.ch;
-      if (r === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    for (let y = top + r; y < top + ROWS * m.ch; y += pitch) {
+      const lane = ((y - top) / m.ch) | 0;
+      if (lane < ROWS && lv[lane] === 0) continue;
+      ctx.moveTo(x + r * 0.7, y);
+      ctx.ellipse(x, y, r * 0.7, r, 0, 0, Math.PI * 2);
     }
     ctx.stroke();
-    // barbs at each vertex, skipped where the wall is gone
     ctx.strokeStyle = RGBA.wireGlint;
-    ctx.lineWidth = Math.max(1, m.ch * 0.025);
+    ctx.lineWidth = Math.max(1, m.ch * 0.03);
     ctx.beginPath();
-    for (let r = 0; r <= ROWS; r++) {
-      if (r < ROWS && lv[r] === 0) continue;
-      const x = (r & 1) === 0 ? wa : wb;
-      const y = top + r * m.ch;
-      const b = m.ch * 0.13;
-      ctx.moveTo(x - b, y - b); ctx.lineTo(x + b, y + b);
-      ctx.moveTo(x + b, y - b); ctx.lineTo(x - b, y + b);
+    let k = 0;
+    for (let y = top + r; y < top + ROWS * m.ch; y += pitch, k++) {
+      if ((k & 1) === 0) continue;
+      const lane = ((y - top) / m.ch) | 0;
+      if (lane < ROWS && lv[lane] === 0) continue;
+      const b = m.ch * 0.09;
+      const bx = x + (k & 2 ? -r * 0.55 : r * 0.55);
+      const by = y - r * 0.6;
+      ctx.moveTo(bx - b, by - b); ctx.lineTo(bx + b, by + b);
+      ctx.moveTo(bx + b, by - b); ctx.lineTo(bx - b, by + b);
     }
     ctx.stroke();
   }
@@ -927,16 +1095,84 @@ export class Renderer {
 
   // -- cursor ----------------------------------------------------------------
 
+  // -- traps and the survey grid ---------------------------------------------
+
+  /**
+   * Planted traps, as ASCII on their own cells: a tripwire or a fence column
+   * as `|`, a minefield as `*`, and a wired lane as `~` in the wall column.
+   * Dim ink, because a trap is ground, not a threat.
+   */
+  private drawTraps(state: GameState): void {
+    const sm = state.sim;
+    for (const t of sm.traps) {
+      const glyph = t.kind === 'minefield' ? '*' : '|';
+      for (let r = t.row0; r <= t.row1; r++) {
+        if (r < 0 || r >= ROWS) continue;
+        for (let c = t.col0; c <= t.col1; c++) {
+          if (c < 0 || c >= FIELD_COLS) continue;
+          this.text(glyph, c, r, PALETTE.dim);
+        }
+      }
+    }
+    if (sm.wireLanes === 0) return;
+    for (let r = 0; r < ROWS; r++) {
+      if ((sm.wireLanes & (1 << r)) !== 0) this.text('~', FIELD_COLS - 1, r, PALETTE.dim);
+    }
+  }
+
+  /**
+   * Placement mode's survey grid: the same ruler the motions resolve against,
+   * on every lane, with the anchor marked and the pending span lit. It exists
+   * only while `shop.mode` is `place`, and it derives from `GameState` alone -
+   * no new coupling from the sim into the renderer.
+   */
+  private drawSurvey(state: GameState): void {
+    if (state.phase !== 'shop' || state.sim.shop.mode !== 'place') return;
+    const shop = state.sim.shop;
+    for (let r = 0; r < ROWS; r++) this.text(SURVEY_RULER, 0, r, PALETTE.dim);
+
+    const a = shop.anchor;
+    if (a) {
+      // The span between the anchor and the crosshair, in the axis this trap
+      // spans: lanes for a fence, columns for a minefield.
+      if (shop.item === 'fence') {
+        const r0 = Math.min(a.row, shop.place.row);
+        const r1 = Math.max(a.row, shop.place.row);
+        for (let r = r0; r <= r1; r++) this.text('|', a.col, r, PALETTE.amber);
+      } else if (shop.item === 'minefield') {
+        const c0 = Math.min(a.col, shop.place.col);
+        const c1 = Math.max(a.col, shop.place.col);
+        for (let c = c0; c <= c1; c++) this.text('*', c, a.row, PALETTE.amber);
+      }
+      this.text('+', a.col, a.row, PALETTE.bloodBright);
+    }
+  }
+
   private drawCursor(state: GameState): void {
     const m = this.m;
     const ctx = this.ctx;
-    const row = state.cursor.row;
-    const col = state.cursor.col;
+    // While placing, the crosshair *is* the placement cursor: the play cursor
+    // is not what `<CR>` acts on.
+    const aim = state.phase === 'shop' && state.sim.shop.mode === 'place'
+      ? state.sim.shop.place : state.cursor;
+    const row = aim.row;
+    const col = aim.col;
     if (row < 0 || row >= ROWS || col < 0 || col >= COLS) return;
 
-    // the lane you are on, so j/k reads instantly
-    ctx.fillStyle = RGBA.laneCursor;
-    ctx.fillRect(m.ox, m.oy + row * m.ch, FIELD_COLS * m.cw, m.ch);
+    // the lane you are on, so j/k reads instantly - and warmer when something
+    // is standing in it, so you know a horizontal cut has a target before you
+    // type it (DECISIONS #95)
+    const hot = (this.laneMask & (1 << row)) !== 0;
+    const ly0 = m.oy + row * m.ch;
+    const lw = FIELD_COLS * m.cw;
+    ctx.fillStyle = hot ? RGBA.laneCursorHot : RGBA.laneCursor;
+    ctx.fillRect(m.ox, ly0, lw, m.ch);
+    if (hot) {
+      const eh = Math.max(1, m.ch * 0.05);
+      ctx.fillStyle = RGBA.laneCursorEdge;
+      ctx.fillRect(m.ox, ly0, lw, eh);
+      ctx.fillRect(m.ox, ly0 + m.ch - eh, lw, eh);
+    }
 
     const p = 0.5 + 0.5 * Math.sin(this.now / 170);
     const x = m.ox + col * m.cw;
@@ -951,7 +1187,8 @@ export class Renderer {
     const y1 = y + m.ch * 0.98;
 
     ctx.globalAlpha = 0.72 + 0.28 * p;
-    ctx.fillStyle = PALETTE.amber;
+    // on a word the banner is already amber, so the brackets go to ink
+    ctx.fillStyle = this.cursorOnWord ? PALETTE.ink : PALETTE.amber;
     // four corner brackets
     ctx.fillRect(x0, y0, lx, th);
     ctx.fillRect(x0, y0, th, ly);
@@ -1020,8 +1257,13 @@ export class Renderer {
     if (fx.sweepMs >= 0) {
       const prog = fx.sweepMs / SWEEP_MS;
       const x = m.ox + (prog * (FIELD_COLS + 6) - 6) * m.cw;
-      ctx.globalAlpha = 0.30;
-      ctx.fillStyle = PALETTE.fog;
+      // a wake trailing west off the leading edge, not a flat slab: the old
+      // version had a hard vertical edge at both ends and read as a UI panel.
+      const wake = ctx.createLinearGradient(x, 0, x + 6 * m.cw, 0);
+      wake.addColorStop(0, 'rgba(91,100,112,0)');
+      wake.addColorStop(0.72, 'rgba(91,100,112,0.16)');
+      wake.addColorStop(1, 'rgba(91,100,112,0.34)');
+      ctx.fillStyle = wake;
       ctx.fillRect(x, m.oy, 6 * m.cw, fh);
       ctx.globalAlpha = 0.55;
       ctx.fillStyle = PALETTE.amber;
@@ -1030,7 +1272,7 @@ export class Renderer {
       ctx.globalAlpha = 1;
     }
 
-    if (fx.error > 0 || state.sim.flashUntil > state.sim.time) {
+    if (state.sim.flashUntil > state.sim.time) {
       ctx.fillStyle = this.gore === 'off' ? RGBA.errorWashSafe : RGBA.errorWash;
       ctx.fillRect(m.ox, m.oy, fw, fh);
     }
@@ -1058,6 +1300,23 @@ export class Renderer {
     this.ctx.globalAlpha = 1;
   }
 
+  /**
+   * The reason the last command did nothing, under the OVERKILL row so the two
+   * can never land on top of each other. Vim prints `E21` on its command line;
+   * this game has no command line, and a silent refusal is how a run ends
+   * without the player knowing why.
+   */
+  private drawNotice(): void {
+    const fx = this.fx;
+    if (fx.notice <= 0 || !this.noticeText) return;
+    // Solid for most of its life, then a quick fade, so it reads as a message
+    // rather than a flicker.
+    const left = fx.notice / NOTICE_MS;
+    this.ctx.globalAlpha = left > 0.25 ? 1 : left / 0.25;
+    this.centerText(this.noticeText, 9, PALETTE.amber, 1.3);
+    this.ctx.globalAlpha = 1;
+  }
+
   // -- HUD -------------------------------------------------------------------
 
   /**
@@ -1075,6 +1334,10 @@ export class Renderer {
     // No scrim: the numbers are scratched onto the ground, not printed in a
     // gutter. A one-pixel dark copy underneath keeps them legible over grass.
     const off = Math.max(1, Math.round(m.scale));
+    // A lane with something in it gets its number in bone rather than dim, so
+    // the count for `d2j` is read off the gutter, not guessed from the figures
+    // (DECISIONS #95).
+    const mask = this.laneMask;
     for (let r = 0; r < ROWS; r++) {
       const here = r === cur;
       const label = (this.lineNumbers === 'absolute' || here)
@@ -1083,8 +1346,9 @@ export class Renderer {
       const col = outside ? -0.9 - label.length : 0.2;
       const x = m.ox + col * m.cw;
       const y = m.oy + r * m.ch;
+      const held = (mask & (1 << r)) !== 0;
       this.textPx(label, x + off, y + off, m.cw, m.ch, PALETTE.bg);
-      this.textPx(label, x, y, m.cw, m.ch, here ? PALETTE.amber : PALETTE.dim);
+      this.textPx(label, x, y, m.cw, m.ch, here ? PALETTE.amber : held ? PALETTE.bone : PALETTE.dim);
     }
   }
 
@@ -1093,6 +1357,9 @@ export class Renderer {
    * barricade bar with the numeral, the magazine strip (dd / D charges), and a
    * zombies-remaining strip along the top edge. No panel behind any of it.
    */
+  private hTraps = -1;
+  private trapStr = '0';
+
   private drawHud(state: GameState): void {
     const m = this.m;
     const ctx = this.ctx;
@@ -1103,6 +1370,7 @@ export class Renderer {
     if (state.charges.dd !== this.hDd) { this.hDd = state.charges.dd; this.ddStr = '' + state.charges.dd; }
     if (state.charges.D !== this.hD) { this.hD = state.charges.D; this.dStr = '' + state.charges.D; }
     if (state.wave !== this.hWave) { this.hWave = state.wave; this.waveStr = 'NIGHT ' + state.wave; }
+    if (state.supplies !== this.hSup) { this.hSup = state.supplies; this.supStr = '' + state.supplies; }
 
     // --- NIGHT n --------------------------------------------------------------
     this.text(this.waveStr, HUD_COL, HUD_ROW, RGBA.hudWhiteDim, 1);
@@ -1150,10 +1418,29 @@ export class Renderer {
     ctx.fillRect(ix - sI * 0.30, y2 - sI * 0.30, sI * 0.60, Math.max(1, sI * 0.18));
     ctx.fillRect(ix - sI * 0.30, y2 + sI * 0.10, sI * 0.60, Math.max(1, sI * 0.18));
     const rowM = HUD_ROW + 2.05;
+    // Zero is red. In survival these do not refill, so an empty magazine is a
+    // state the player has to be able to see at a glance (DECISIONS #86).
     this.text('dd', HUD_COL + 1.6, rowM, RGBA.hudWhiteDim, 1);
-    this.text(this.ddStr, HUD_COL + 3.9, rowM, RGBA.hudWhite, 1);
+    this.text(this.ddStr, HUD_COL + 3.9, rowM,
+      state.charges.dd === 0 ? PALETTE.bloodBright : RGBA.hudWhite, 1);
     this.text('D', HUD_COL + 6.0, rowM, RGBA.hudWhiteDim, 1);
-    this.text(this.dStr, HUD_COL + 7.3, rowM, RGBA.hudWhite, 1);
+    this.text(this.dStr, HUD_COL + 7.3, rowM,
+      state.charges.D === 0 ? PALETTE.bloodBright : RGBA.hudWhite, 1);
+
+    // --- the run wallet, and what is planted, beneath the magazine ------------
+    // Spelled out and on its own row rather than abbreviated beside the
+    // magazine: the store made this the number you plan around, and the trap
+    // count needs a home next to it (DECISIONS #77). Budgeted to seven
+    // digits, which is what CALLOUT_COL0 is set against.
+    const rowW = HUD_ROW + 3.15;
+    this.text('SUPPLIES', HUD_COL, rowW, RGBA.hudWhiteDim, 1);
+    this.text(this.supStr, HUD_COL + 9.2, rowW, RGBA.hudWhite, 1);
+    const traps = state.sim.traps.length;
+    if (traps > 0) {
+      if (traps !== this.hTraps) { this.hTraps = traps; this.trapStr = '' + traps; }
+      this.text('TRAPS', HUD_COL + 1.6, rowW + 1, RGBA.hudWhiteDim, 1);
+      this.text(this.trapStr, HUD_COL + 7.4, rowW + 1, RGBA.hudWhite, 1);
+    }
 
     // --- zombies remaining, along the top edge --------------------------------
     const sim = state.sim;
@@ -1164,7 +1451,7 @@ export class Renderer {
       const zx = m.ox + STRIP_COL0 * m.cw;
       const zy = m.oy + STRIP_ROW * m.ch;
       const zw = (STRIP_COL1 - STRIP_COL0) * m.cw;
-      const zh = m.ch * 0.30;
+      const zh = m.ch * STRIP_H;
       ctx.fillStyle = RGBA.hudTrack;
       ctx.fillRect(zx - m.cw * 0.2, zy - m.ch * 0.06, zw + m.cw * 0.4, zh + m.ch * 0.12);
       ctx.fillStyle = RGBA.hudWhiteDim;
@@ -1172,6 +1459,28 @@ export class Renderer {
     }
 
     this.drawCombo(state.combo);
+    this.drawCallouts();
+  }
+
+  /**
+   * The medal stack: big, brief, stacked, newest on top. Nothing here reads or
+   * writes GameState - a callout is pure presentation.
+   */
+  private drawCallouts(): void {
+    const live = this.callouts;
+    // Retire what has expired, keeping the newest-first order.
+    while (live.length > 0 && this.now - live[live.length - 1].at >= CALLOUT_MS) live.pop();
+    if (live.length === 0) return;
+    const boxes = calloutLayout(live, this.now, this.calloutBoxes);
+    const ctx = this.ctx;
+    const prev = ctx.globalAlpha;
+    for (let i = 0; i < boxes.length; i++) {
+      const b = boxes[i];
+      ctx.globalAlpha = prev * b.alpha;
+      // The topmost is the newest, so it gets the warm ink; the rest go dim.
+      this.text(b.text, b.col, b.row, i === 0 ? PALETTE.amber : RGBA.hudWhiteDim, b.scale);
+    }
+    ctx.globalAlpha = prev;
   }
 
   private drawMuteIcon(x: number, y: number, s: number): void {
@@ -1234,6 +1543,47 @@ export class Renderer {
     this.ctx.fillRect(m.ox + col * m.cw, m.oy + row * m.ch, w * m.cw, h * m.ch);
   }
 
+  /**
+   * A sheet of paper sweeping west across the whole viewport: it enters from
+   * the right, covers, and leaves, so whatever was drawn underneath is
+   * revealed behind it. That is the store card arriving - the field is the
+   * page you were on, the card is the page you turned to.
+   *
+   * `p` runs 0..1 and at 1 nothing is drawn. Presentation only: it reads no
+   * state and returns the context exactly as it found it.
+   */
+  pageTurn(p: number): void {
+    if (p >= 1 || p < 0) return;
+    const ctx = this.ctx;
+    const w = this.cssW;
+    const h = this.cssH;
+    // Ease out, so the page slows as it lands rather than snapping past.
+    const e = 1 - (1 - p) * (1 - p);
+    // The sheet spans [xr - w, xr]: off-screen right at 0, covering at 0.5,
+    // off-screen left at 1.
+    const xr = w * (2 - 2 * e);
+    const curl = Math.min(w * 0.05, 74);
+
+    ctx.save();
+    ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
+    ctx.fillStyle = PALETTE.paper;
+    ctx.fillRect(xr - w, 0, w, h);
+
+    // A fold down each edge: the near side catches the light, the far side
+    // throws a shadow onto the page underneath.
+    for (const [x, dir] of [[xr, 1], [xr - w, -1]] as const) {
+      const g = ctx.createLinearGradient(x - curl * dir, 0, x + curl * 1.5 * dir, 0);
+      g.addColorStop(0, 'rgba(0,0,0,0)');
+      g.addColorStop(0.40, 'rgba(255,255,255,0.26)');
+      g.addColorStop(0.52, 'rgba(0,0,0,0.40)');
+      g.addColorStop(1, 'rgba(0,0,0,0)');
+      ctx.fillStyle = g;
+      const x0 = Math.min(x - curl * dir, x + curl * 1.5 * dir);
+      ctx.fillRect(x0, 0, curl * 2.5, h);
+    }
+    ctx.restore();
+  }
+
   overlay(color: string, alpha: number): void {
     if (alpha <= 0) return;
     const ctx = this.ctx;
@@ -1262,8 +1612,6 @@ export class Renderer {
   }
 
   /** Whole field flashes for 80ms. main.ts calls this on an unknown key. */
-  flashError(): void { this.fx.flashError(80); }
-
   // -- panels, rules, keycaps (Phase E cards) --------------------------------
 
   /** A weathered paper (or ink) panel in cell units, with a soft drop shadow. */
@@ -1357,8 +1705,10 @@ export class Renderer {
     ctx.stroke();
   }
 
-  /** A key-cap box with a letter in it, as sketched in a notebook. */
-  keycap(label: string, col: number, row: number, w?: number): void {
+  /** A key-cap box with a letter in it, as sketched in a notebook. `ink`
+   *  overrides the box and letter colour, which the mission demo uses to light
+   *  a cap as the demo presses it. */
+  keycap(label: string, col: number, row: number, w?: number, ink?: string): void {
     const m = this.m;
     const ctx = this.ctx;
     const cells = w ?? Math.max(2, label.length + 1.4);
@@ -1366,8 +1716,8 @@ export class Renderer {
     const y = m.oy + row * m.ch + m.ch * 0.06;
     const pw = cells * m.cw;
     const ph = m.ch * 1.05;
-    const stroke = this.lastPanelPaper ? PALETTE.ink : PALETTE.bone;
-    const inkText = this.lastPanelPaper ? PALETTE.ink : PALETTE.amber;
+    const stroke = ink ?? (this.lastPanelPaper ? PALETTE.ink : PALETTE.bone);
+    const inkText = ink ?? (this.lastPanelPaper ? PALETTE.ink : PALETTE.amber);
 
     ctx.strokeStyle = stroke;
     ctx.lineWidth = Math.max(1, m.ch * 0.05);
@@ -1468,43 +1818,124 @@ export class Renderer {
     }
 
     // --- droplets ------------------------------------------------------------
-    const drops = full ? (heavy ? 12 : 5 + ((escalate * 8) | 0)) : 3;
+    const drops = full ? (heavy ? 24 : 10 + ((escalate * 14) | 0)) : 3;
     for (let d = 0; d < drops; d++) {
       p.spawn(K_CHUNK, cxp + rng.range(-0.8, 0.8), mid,
-        rng.range(-12, 12) * spread, rng.range(-15, -2) * spread,
-        rng.range(0.35, 0.9), feet + rng.range(-0.2, 0.5),
-        rng.range(0.07, 0.15), rng.range(-3, 3),
+        rng.range(-13, 13) * spread, rng.range(-16, -2) * spread,
+        rng.range(0.35, 0.9), feet + rng.range(-0.2, 0.6),
+        rng.range(0.07, 0.17), rng.range(-3, 3),
         rng.int(CHUNK_SHAPES), rng.next() < 0.5 ? T.BLOOD : T.BLOOD_BRIGHT,
         P_BLEEDS);
     }
     if (!full) return;
 
-    // --- the figure comes apart ---------------------------------------------
-    const limbs = 5 + ((escalate * 7) | 0) + (heavy ? 8 : 0);
-    for (let d = 0; d < limbs; d++) {
-      const tone = d % 3 === 0 ? T.CLOTH : (d % 3 === 1 ? T.FLESH : T.BLOOD_DARK);
-      p.spawn(K_CHUNK,
-        cxp + rng.range(-0.7, 0.7), mid + rng.range(-0.5, 0.5),
-        rng.range(-11, 11) * spread, rng.range(-16, -4) * spread,
-        rng.range(0.6, 1.3), feet + rng.range(-0.15, 0.45),
-        rng.range(0.16, 0.34) * (heavy ? 1.35 : 1), rng.range(-4, 4),
-        rng.int(CHUNK_SHAPES), tone, P_BLEEDS);
+    // --- a red mist hangs where the body was ---------------------------------
+    // Tiny, slow, short-lived, and thrown wide. They bleed, so the cell the
+    // zombie stood in soaks through even on a clean single kill.
+    const mist = 14 + ((escalate * 14) | 0) + (heavy ? 16 : 0);
+    for (let d = 0; d < mist; d++) {
+      p.spawn(K_CHUNK, cxp + rng.range(-1.2, 1.2), mid + rng.range(-0.6, 0.4),
+        rng.range(-4, 4) * spread, rng.range(-3, 1),
+        rng.range(0.25, 0.55), feet + rng.range(-0.1, 0.7),
+        rng.range(0.04, 0.08), 0,
+        rng.int(CHUNK_SHAPES), T.BLOOD_BRIGHT, P_BLEEDS);
     }
 
-    // --- arterial spray at high combo ---------------------------------------
-    if (c >= 10 || heavy) {
-      const jets = 14 + ((escalate * 16) | 0) + (heavy ? 14 : 0);
-      for (let d = 0; d < jets; d++) {
-        // a cone thrown back down-range, away from the gun
-        const a = Math.PI * (0.86 + rng.range(-0.16, 0.16));
-        const sp = rng.range(12, 30) * spread;
-        p.spawn(K_CHUNK, cxp, mid,
-          Math.cos(a) * sp, Math.sin(a) * sp * 0.75 - 4,
-          rng.range(0.4, 0.85), feet + rng.range(0, 0.6),
-          rng.range(0.05, 0.12), rng.range(-6, 6),
-          rng.int(CHUNK_SHAPES), T.BLOOD_BRIGHT, P_BLEEDS);
+    // --- the figure comes apart ---------------------------------------------
+    // Gibs rest where they land and lie on the grass until they fade.
+    const limbs = 8 + ((escalate * 9) | 0) + (heavy ? 12 : 0);
+    for (let d = 0; d < limbs; d++) {
+      const tone = d % 4 === 0 ? T.CLOTH : (d % 4 === 1 ? T.FLESH : (d % 4 === 2 ? T.BLOOD_DARK : T.BONE));
+      p.spawn(K_CHUNK,
+        cxp + rng.range(-0.7, 0.7), mid + rng.range(-0.5, 0.5),
+        rng.range(-12, 12) * spread, rng.range(-17, -4) * spread,
+        rng.range(1.6, 3.2), feet + rng.range(-0.15, 0.55),
+        rng.range(0.18, 0.40) * (heavy ? 1.4 : 1), rng.range(-5, 5),
+        rng.int(CHUNK_SHAPES), tone, P_BLEEDS | P_REST);
+    }
+    // the skull: one big bone chunk off the top, tumbling
+    p.spawn(K_CHUNK,
+      cxp + rng.range(-0.3, 0.3), zp.row + FIG_HEAD_GAP + 0.4,
+      rng.range(-8, 8) * spread, rng.range(-19, -12) * spread,
+      rng.range(2.2, 3.4), feet + rng.range(0, 0.5),
+      0.46 * (heavy ? 1.3 : 1), rng.range(-6, 6),
+      rng.int(CHUNK_SHAPES), T.BONE, P_BLEEDS | P_REST);
+
+    // --- arterial spray ------------------------------------------------------
+    // Every full kill sprays; combo and a bloater burst widen the cone.
+    const jets = 10 + ((escalate * 26) | 0) + (heavy ? 20 : 0);
+    const cone = 0.12 + escalate * 0.08 + (heavy ? 0.10 : 0);
+    for (let d = 0; d < jets; d++) {
+      // a cone thrown back down-range, away from the gun
+      const a = Math.PI * (0.86 + rng.range(-cone, cone));
+      const sp = rng.range(12, 32) * spread;
+      p.spawn(K_CHUNK, cxp, mid,
+        Math.cos(a) * sp, Math.sin(a) * sp * 0.75 - 4,
+        rng.range(0.4, 0.9), feet + rng.range(0, 0.7),
+        rng.range(0.05, 0.13), rng.range(-6, 6),
+        rng.int(CHUNK_SHAPES), T.BLOOD_BRIGHT, P_BLEEDS);
+    }
+    this.fx.flashRed(0.05 + escalate * 0.09 + (heavy ? 0.06 : 0));
+  }
+
+  /**
+   * A partial hit. `d` letters came off `z` since the last frame (`zp` still
+   * holds where it stood then); the matching piece of the figure comes off
+   * with them and lands on the grass.
+   */
+  private maim(zp: ZPos, z: Zombie, d: number): void {
+    const rng = this.rng;
+    const p = this.particles;
+    const n = z.text.length;
+    const level = this.gore;
+    const figH = figureHeightCells(figureKind(z.kind, n));
+    const feet = z.row + FIG_HEAD_GAP + figH;
+    // the piece leaves from the side that was shot
+    const west = z.col > zp.col;
+    const cxp = z.col + n * 0.5 + (west ? -0.4 : 0.4);
+    const mid = feet - figH * 0.62;
+    const away = west ? -1 : 1;
+    const gibs = d > 3 ? 3 : d;
+
+    if (level === 'off') {
+      for (let k = 0; k < 4 + gibs * 2; k++) {
+        p.spawn(K_CHUNK, cxp + rng.range(-0.4, 0.4), mid + rng.range(-0.3, 0.3),
+          rng.range(-1.5, 1.5) + away * 1.5, rng.range(-2.4, -0.6),
+          rng.range(0.35, 0.6), feet, rng.range(0.10, 0.20), rng.range(-1, 1),
+          rng.int(CHUNK_SHAPES), T.GREY, P_GHOST);
       }
-      this.fx.flashRed(0.10);
+      return;
+    }
+
+    const full = level === 'full';
+    // the limb itself: flesh with cloth still on it, and bone at the break
+    for (let k = 0; k < gibs; k++) {
+      const tone = k === 0 ? T.FLESH : (k === 1 ? T.CLOTH : T.BONE);
+      p.spawn(K_CHUNK,
+        cxp + rng.range(-0.3, 0.3), mid + rng.range(-0.4, 0.2),
+        rng.range(4, 10) * away + rng.range(-3, 3), rng.range(-14, -7),
+        rng.range(1.6, 3.0), feet + rng.range(-0.1, 0.5),
+        rng.range(0.22, 0.34), rng.range(-5, 5),
+        rng.int(CHUNK_SHAPES), tone, P_BLEEDS | P_REST);
+    }
+    const drops = full ? 5 + d * 3 : 2;
+    for (let k = 0; k < drops; k++) {
+      p.spawn(K_CHUNK, cxp + rng.range(-0.4, 0.4), mid,
+        rng.range(-6, 6) + away * rng.range(2, 8), rng.range(-12, -2),
+        rng.range(0.35, 0.8), feet + rng.range(-0.2, 0.5),
+        rng.range(0.06, 0.13), rng.range(-3, 3),
+        rng.int(CHUNK_SHAPES), rng.next() < 0.5 ? T.BLOOD : T.BLOOD_BRIGHT, P_BLEEDS);
+    }
+    if (!full) return;
+    // a short squirt out of the wound, the way the shot went
+    for (let k = 0; k < 4 + d * 3; k++) {
+      const a = Math.PI * (west ? 1 : 0) + rng.range(-0.35, 0.35);
+      const sp = rng.range(8, 20);
+      p.spawn(K_CHUNK, cxp, mid,
+        Math.cos(a) * sp, -Math.abs(Math.sin(a)) * sp * 0.6 - 3,
+        rng.range(0.3, 0.7), feet + rng.range(0, 0.6),
+        rng.range(0.04, 0.10), rng.range(-6, 6),
+        rng.int(CHUNK_SHAPES), T.BLOOD_BRIGHT, P_BLEEDS);
     }
   }
 

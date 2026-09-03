@@ -3,6 +3,7 @@
 import { readFileSync, readdirSync } from 'node:fs';
 import { join, resolve as res } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { LOG_VERSION } from '../src/harness/logversion';
 
 function ctxFor(): any {
   const t: any = {
@@ -39,7 +40,23 @@ g.document = {
 g.MutationObserver = class { observe() {} disconnect() {} };
 g.fetch = () => Promise.resolve({});
 const runs = res(process.cwd(), 'runs');
-const logFile = readdirSync(runs).filter((f) => f.endsWith('.jsonl')).sort().pop()!;
+/** `init.version`, or 1 for a log recorded before the field existed. */
+const logVersion = (f: string): number => {
+  try {
+    const l = JSON.parse(readFileSync(join(runs, f), 'utf8').split('\n', 1)[0]);
+    return l?.t === 'init' ? (l.version ?? 1) : 1;
+  } catch { return 1; }
+};
+// The newest log this build can be held to. Older ones replay as a game but
+// not byte for byte, so failing on them would blame the log (DECISIONS #82).
+const candidates = readdirSync(runs).filter((f) => f.endsWith('.jsonl')).sort();
+const skipped = candidates.filter((f) => logVersion(f) < LOG_VERSION);
+const logFile = candidates.filter((f) => logVersion(f) >= LOG_VERSION).pop();
+for (const f of skipped) console.log(`skipped ${f}: recorded before log version ${LOG_VERSION}`);
+if (!logFile) {
+  console.log(`no runs/*.jsonl at log version ${LOG_VERSION} or above; record one with \`npm run play\`.`);
+  process.exit(0);
+}
 const lines = readFileSync(join(runs, logFile), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
 const init = lines.find((l: any) => l.t === 'init');
 if (!init) { process.stderr.write(`${logFile}: no init line\n`); process.exit(1); }
@@ -75,7 +92,15 @@ let n = 0;
 for (const l of lines) {
   if (l.t !== 'in') continue;
   const m = /^step\s+(\d+)$/.exec(l.line.trim());
+  // The CLI's mission command (`src/harness/repl.ts`), which is not a keystroke.
+  const mi = /^(?:t|tutorial|mission)(?:\s+(\d+))?$/.exec(l.line.trim());
   if (m) motd.step(Number(m[1]));
+  else if (mi) {
+    motd.game.engine.reset();
+    motd.menu.reset();
+    motd.game.sim.startMission((mi[1] ? Number(mi[1]) : 1) - 1);
+    motd.game.bus.drain();
+  }
   else if (/^(quit|:q|state|help|auto .*|seed .*)$/.test(l.line.trim())) continue;
   else motd.keys(l.line.trim());
   n++;

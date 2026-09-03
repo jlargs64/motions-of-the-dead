@@ -10,6 +10,12 @@
 // ============================================================================
 import type { Bus } from '../core/bus';
 import type { ZombieKind } from '../core/types';
+// The medal table is data the sim owns; audio reads the rung a name stands
+// for, and never the other way round.
+import { MULTI_KILL_MIN, medalTier } from '../sim/medals';
+// Item kinds are data the sim owns too: a plant and a purchase arrive as the
+// same `buy` event, and only the table knows which is which.
+import { itemById } from '../sim/store';
 
 // --- tuning constants -------------------------------------------------------
 const MASTER_LEVEL = 0.9;
@@ -123,12 +129,16 @@ export class Audio {
   constructor(bus: Bus) {
     const u = this.unsubs;
     u.push(bus.on('kill', (e) => this.onKill(e.kind, e.overkill)));
+    u.push(bus.on('medal', (e) => this.onMedal(e.name)));
     u.push(bus.on('combo', (e) => this.onCombo(e.n)));
     u.push(bus.on('combo_break', () => this.onComboBreak()));
     u.push(bus.on('barricade_hit', (e) => this.onBarricadeHit(e.dmg)));
     u.push(bus.on('wave_start', () => this.onWaveStart()));
     u.push(bus.on('wave_clear', () => this.onWaveClear()));
     u.push(bus.on('charge_used', (e) => this.onChargeUsed(e.kind)));
+    u.push(bus.on('buy', (e) => this.onBuy(e.item)));
+    u.push(bus.on('trap_fire', () => this.onTrapFire()));
+    u.push(bus.on('revive', () => this.onRevive()));
     u.push(bus.on('death', () => this.onDeath()));
   }
 
@@ -362,6 +372,43 @@ export class Audio {
     this.play(v, osc, t, 0.2);
   }
 
+  /**
+   * A medal sting. Multi-kills ring a rising major triad whose root and layer
+   * count climb with the rung, so a KILLIONAIRE is unmistakably not a DOUBLE
+   * KILL; style medals get a distinct two-note figure instead, high and short,
+   * so PERFECT never sounds like a kill count. `ready()` covers mute and
+   * `voice()` covers the voice cap, so a jammed lane cannot flood either.
+   */
+  private onMedal(name: string): void {
+    if (!this.ready()) return;
+    const ctx = this.ctx!;
+    const t = ctx.currentTime;
+    const tier = medalTier(name);
+
+    if (tier === 0) {
+      // style: a clean rising fifth, two notes, out of the way of the ladder
+      const v = this.voice(0.34);
+      if (!v) return;
+      this.note(v, t, 880, 0.10, 0.075);
+      this.note(v, t + 0.085, 1318.5, 0.20, 0.065);
+      return;
+    }
+
+    const rung = Math.min(tier - MULTI_KILL_MIN, 8);        // 0..8
+    const v = this.voice(0.55);
+    if (!v) return;
+    // Two semitones per rung, as the combo ladder climbs, starting at A3.
+    const f = 220 * Math.pow(2, (rung * 2) / 12);
+    // One layer per two rungs: the triad fills in as the count goes up.
+    const layers = 1 + Math.min(2, rung >> 1);
+    const ratios = [1, 1.5, 2];
+    for (let i = 0; i < layers; i++) {
+      this.note(v, t + i * 0.045, f * ratios[i], 0.26 + i * 0.06, 0.085 - i * 0.015);
+    }
+    // The top of the ladder gets a bright shard on top of the triad.
+    if (rung >= 5) this.shard(v, t + 0.09, f * 4, f * 2.5, 0.30, 0.05);
+  }
+
   private onComboBreak(): void {
     this.comboRung = 0;
     if (!this.ready()) return;
@@ -491,6 +538,111 @@ export class Audio {
       const ng = ctx.createGain();
       env(ng.gain, t + 0.006, 0.12, 0.002, 0.05);
       ns.connect(bp).connect(ng).connect(v.gain);
+    }
+  }
+
+  /**
+   * A purchase. A trap is not a transaction, it is a thing you put in the
+   * ground, so a plant gets the mallet and everything else gets the till.
+   */
+  private onBuy(item: string): void {
+    if (!this.ready()) return;
+    const ctx = this.ctx!;
+    const t = ctx.currentTime;
+    const trap = itemById(item)?.kind === 'trap';
+    const v = this.voice(trap ? 0.30 : 0.34);
+    if (!v) return;
+
+    if (trap) {
+      // a stake going in: a low thud with a wooden knock on top
+      const osc = ctx.createOscillator();
+      osc.type = 'triangle';
+      osc.frequency.setValueAtTime(210, t);
+      osc.frequency.exponentialRampToValueAtTime(70, t + 0.09);
+      const g = ctx.createGain();
+      env(g.gain, t, 0.20, 0.002, 0.10);
+      osc.connect(g).connect(v.gain);
+      this.play(v, osc, t, 0.14);
+
+      const ns = this.noiseSrc(v, t, 0.05, 1);
+      if (ns) {
+        const bp = ctx.createBiquadFilter();
+        bp.type = 'bandpass';
+        bp.frequency.value = 1600;
+        bp.Q.value = 2.2;
+        const ng = ctx.createGain();
+        env(ng.gain, t, 0.13, 0.001, 0.04);
+        ns.connect(bp).connect(ng).connect(v.gain);
+      }
+      return;
+    }
+
+    // the till: two bright taps, the second a fifth up, over a paper rustle
+    this.note(v, t, 660, 0.10, 0.10);
+    this.note(v, t + 0.075, 990, 0.16, 0.085);
+    const ns = this.noiseSrc(v, t + 0.02, 0.12, 1);
+    if (ns) {
+      const hp = ctx.createBiquadFilter();
+      hp.type = 'highpass';
+      hp.frequency.value = 3200;
+      const ng = ctx.createGain();
+      env(ng.gain, t + 0.02, 0.05, 0.008, 0.10);
+      ns.connect(hp).connect(ng).connect(v.gain);
+    }
+  }
+
+  /** A trap going off: a metal snap, dry, with no meat in it. */
+  private onTrapFire(): void {
+    if (!this.ready()) return;
+    const ctx = this.ctx!;
+    const t = ctx.currentTime;
+    const v = this.voice(0.22);
+    if (!v) return;
+
+    const ns = this.noiseSrc(v, t, 0.06, 1);
+    if (ns) {
+      const bp = ctx.createBiquadFilter();
+      bp.type = 'bandpass';
+      bp.frequency.setValueAtTime(2600, t);
+      bp.frequency.exponentialRampToValueAtTime(900, t + 0.05);
+      bp.Q.value = 1.6;
+      const ng = ctx.createGain();
+      env(ng.gain, t, 0.24, 0.001, 0.05);
+      ns.connect(bp).connect(ng).connect(v.gain);
+    }
+    const osc = ctx.createOscillator();
+    osc.type = 'square';
+    osc.frequency.setValueAtTime(380, t);
+    osc.frequency.exponentialRampToValueAtTime(150, t + 0.07);
+    const g = ctx.createGain();
+    env(g.gain, t, 0.11, 0.001, 0.07);
+    osc.connect(g).connect(v.gain);
+    this.play(v, osc, t, 0.10);
+  }
+
+  /** Second Wind: the wall coming back. A rising swell, and a breath. */
+  private onRevive(): void {
+    this.comboRung = 0;
+    if (!this.ready()) return;
+    const ctx = this.ctx!;
+    const t = ctx.currentTime;
+    const v = this.voice(1.1);
+    if (!v) return;
+
+    const lp = ctx.createBiquadFilter();
+    lp.type = 'lowpass';
+    lp.frequency.setValueAtTime(200, t);
+    lp.frequency.exponentialRampToValueAtTime(1800, t + 0.55);
+    const g = ctx.createGain();
+    env(g.gain, t, 0.26, 0.28, 0.85);
+    lp.connect(g).connect(v.gain);
+    for (const f of [98, 147, 196]) {
+      const osc = ctx.createOscillator();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(f * 0.75, t);
+      osc.frequency.exponentialRampToValueAtTime(f, t + 0.5);
+      osc.connect(lp);
+      this.play(v, osc, t, 0.95);
     }
   }
 

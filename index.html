@@ -4,13 +4,44 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
     <title>MOTIONS OF THE DEAD</title>
+    <meta name="description" content="A gory, nocturnal survival shooter where the only input is Vim normal-mode motions and operators. Zombies are words. You kill by editing." />
+    <meta name="theme-color" content="#0d1117" />
+    <meta name="color-scheme" content="dark" />
+
+    <!-- Icons. `public/icon.svg` is the source; the PNGs are baked from it by
+         `npm run icons` because iOS will not take an SVG here. -->
+    <link rel="icon" href="./icon.svg" type="image/svg+xml" />
+    <link rel="icon" href="./icon-192.png" sizes="192x192" type="image/png" />
+    <link rel="apple-touch-icon" href="./icon-180.png" sizes="180x180" />
+    <link rel="manifest" href="./manifest.webmanifest" />
+
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content="MOTIONS OF THE DEAD" />
+    <meta property="og:description" content="A survival shooter you play in Vim normal mode. Zombies are words. You kill by editing." />
+    <meta property="og:image" content="./social-card.png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="MOTIONS OF THE DEAD" />
+    <meta name="twitter:description" content="A survival shooter you play in Vim normal mode. Zombies are words. You kill by editing." />
+    <meta name="twitter:image" content="./social-card.png" />
+
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Motions" />
     <style>
       html, body { margin: 0; padding: 0; height: 100%; background: #0a0a0c; overflow: hidden; }
       canvas { display: block; width: 100vw; height: 100vh; image-rendering: pixelated; cursor: none; }
+      /* The save screen's three DOM surfaces. Off-screen, but the textarea has
+         to stay focusable, so none of this can be `display: none`. */
+      .offscreen { position: fixed; top: -200px; left: -200px; width: 1px; height: 1px; opacity: 0; }
     </style>
   </head>
   <body>
     <canvas id="screen"></canvas>
+    <a id="save-download" class="offscreen" download="motd-save.json" aria-hidden="true"></a>
+    <input id="save-file" class="offscreen" type="file" accept=".json,application/json" aria-hidden="true" />
+    <textarea id="save-paste" class="offscreen" aria-hidden="true" spellcheck="false"></textarea>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

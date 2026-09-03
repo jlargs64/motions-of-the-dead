@@ -2,22 +2,19 @@
 // you actually know and which Vim you keep avoiding.
 import type { Bus } from '../core/bus';
 import type { GameState } from '../core/state';
-import type { Buffer, Cursor, Zombie } from '../core/types';
-import { optimalKill, tokensUsed } from '../sim/optimal';
+import { tokensUsed } from '../sim/optimal';
+import { wastedOf } from '../sim/judgement';
+import { FIRST_BLOOD, STYLE_BONUS, salvageFor } from '../sim/medals';
+import { MAX_RUNS } from '../save/schema';
+import type { Lifetime, RunRecord } from '../save/schema';
+import { countMedal, creditSalvage } from '../save/save';
+import type { SaveStore } from '../save/save';
 
-const KEY = 'motd.ledger';
-const MAX_RUNS = 40;
-
-export interface MotionStat { used: number; kills: number }
-export interface RunRecord {
-  at: number; wave: number; score: number; kills: number; keystrokes: number; kpk: number;
-}
-export interface LedgerData {
-  motions: Record<string, MotionStat>;
-  missed: Record<string, number>;
-  runs: RunRecord[];
-  highScore: number;
-}
+// The shapes live in src/save/schema.ts now: the ledger is a view over
+// `save.lifetime`, not the owner of a localStorage key.
+export type { MotionStat, RunRecord } from '../save/schema';
+/** @deprecated Read `Lifetime` from src/save/schema instead. */
+export type LedgerData = Lifetime;
 
 export interface RunSummary {
   topUsed: Array<[string, number]>;
@@ -28,45 +25,32 @@ export interface RunSummary {
   wastedKeystrokes: number;
 }
 
-function emptyData(): LedgerData {
-  return { motions: {}, missed: {}, runs: [], highScore: 0 };
+function emptyLifetime(): Lifetime {
+  return { motions: {}, missed: {}, runs: [], highScore: 0, kills: 0, medals: {} };
 }
-
-function load(): LedgerData {
-  try {
-    const raw = globalThis.localStorage?.getItem(KEY);
-    if (!raw) return emptyData();
-    const d = JSON.parse(raw) as Partial<LedgerData>;
-    return {
-      motions: d.motions ?? {},
-      missed: d.missed ?? {},
-      runs: Array.isArray(d.runs) ? d.runs : [],
-      highScore: typeof d.highScore === 'number' ? d.highScore : 0,
-    };
-  } catch { return emptyData(); }
-}
-
-function save(d: LedgerData): void {
-  try { globalThis.localStorage?.setItem(KEY, JSON.stringify(d)); } catch { /* private window */ }
-}
-
-interface Snapshot { buffer: Buffer; cursor: Cursor; charges: { dd: number; D: number }; raw: string }
 
 export class Ledger {
-  data: LedgerData = load();
+  /**
+   * The live `save.lifetime` object. Hot-path writes (one per token per
+   * command) mutate it in place; the persist happens once, at endRun().
+   */
+  get data(): Lifetime { return this.store.get().lifetime; }
 
   /** Reset every run. */
   private usedThisRun = new Set<string>();
   private runUsage = new Map<string, number>();
   private optimalTokens = new Map<string, number>();
-  /** State at the first command after the last kill: the anchor a kill is judged from. */
-  private anchor: Snapshot | null = null;
-  private keysSinceAnchor = 0;
   private wasted = 0;
+  private bus: Bus;
 
-  constructor(private state: GameState, bus: Bus) {
+  constructor(private state: GameState, bus: Bus, private store: SaveStore) {
+    this.bus = bus;
     bus.on('command', (e) => this.onCommand(e.cmd.raw));
-    bus.on('kill', (e) => this.onKill(e.zombieId, e.via));
+    bus.on('kill', (e) => this.onKill(e.via));
+    // The sim does the second-guessing now (DECISIONS #68); this is the
+    // Ledger reading its work rather than running the oracle a second time.
+    bus.on('kill_judged', (e) => this.onJudged(e.spent, e.optimal));
+    bus.on('medal', (e) => this.onMedal(e.name));
     bus.on('wave_start', (e) => { if (e.n === 1) this.beginRun(); });
     bus.on('death', () => this.endRun());
   }
@@ -75,54 +59,52 @@ export class Ledger {
     this.usedThisRun.clear();
     this.runUsage.clear();
     this.optimalTokens.clear();
-    this.anchor = null;
-    this.keysSinceAnchor = 0;
     this.wasted = 0;
   }
 
   private onCommand(raw: string): void {
+    // FIRST BLOOD is the first *lifetime* press of a token, so it is judged
+    // here and not in the sim, which must not read the save (DECISIONS #71).
+    let fresh = false;
     for (const tok of tokensUsed(raw)) {
       this.usedThisRun.add(tok);
       this.runUsage.set(tok, (this.runUsage.get(tok) ?? 0) + 1);
       const m = this.data.motions[tok] ?? (this.data.motions[tok] = { used: 0, kills: 0 });
+      if (m.used === 0) fresh = true;
       m.used++;
     }
-    // The first command after a kill anchors the next comparison: everything
-    // from here until the next kill is what that kill actually cost you.
-    if (!this.anchor) {
-      const s = this.state;
-      this.anchor = {
-        buffer: { rows: s.buffer.rows.slice(), zombies: s.buffer.zombies.map(copy) },
-        cursor: { row: s.cursor.row, col: s.cursor.col },
-        charges: { dd: s.charges.dd, D: s.charges.D },
-        raw,
-      };
-      this.keysSinceAnchor = 0;
-    }
-    this.keysSinceAnchor += raw.length;
+    // At most one per command, however many new tokens it pressed.
+    if (fresh) this.bus.emit({ t: 'medal', name: FIRST_BLOOD, bonus: STYLE_BONUS[FIRST_BLOOD] });
   }
 
-  private onKill(zombieId: number, via: string): void {
+  private onKill(via: string): void {
     for (const tok of tokensUsed(via)) {
       const m = this.data.motions[tok] ?? (this.data.motions[tok] = { used: 0, kills: 0 });
       m.kills++;
     }
-    const anchor = this.anchor;
-    // Only the first kill of a sequence is second-guessed; multi-kills were good.
-    if (!anchor) return;
-    const spent = this.keysSinceAnchor;
-    this.anchor = null;
-    this.keysSinceAnchor = 0;
+  }
 
-    const target = anchor.buffer.zombies.find((z) => z.id === zombieId);
-    if (!target) return;                       // it spawned after the anchor
-    const best = optimalKill(anchor.buffer, anchor.cursor, target, anchor.charges);
-    if (!best || best.keys.length >= spent) return;
-    this.wasted += spent - best.keys.length;
-    for (const tok of tokensUsed(best.keys)) {
+  /** What the sim's oracle comparison means for the death screen's tables. */
+  private onJudged(spent: number, optimal: string | null): void {
+    // A drill scene has a known answer, so nothing in it is a motion you
+    // "missed"; the drill scores the kill itself (drills-and-coach D5).
+    if (this.state.sim.mode === 'drill') return;
+    const wasted = wastedOf(spent, optimal);
+    if (wasted === 0 || optimal === null) return;
+    this.wasted += wasted;
+    for (const tok of tokensUsed(optimal)) {
       this.optimalTokens.set(tok, (this.optimalTokens.get(tok) ?? 0) + 1);
       if (!this.usedThisRun.has(tok)) this.data.missed[tok] = (this.data.missed[tok] ?? 0) + 1;
     }
+  }
+
+  /** Every medal, wherever it came from, counts and pays lifetime salvage. */
+  private onMedal(name: string): void {
+    // A drill's only economy touch is the salvage a personal best pays
+    // (drills-and-coach D5); its PERFECTs are scored on the end card instead.
+    if (this.state.sim.mode === 'drill') return;
+    countMedal(this.store, name);
+    creditSalvage(this.store, salvageFor(name));
   }
 
   endRun(): void {
@@ -136,10 +118,14 @@ export class Ledger {
       keystrokes: s.sim.keystrokes,
       kpk: Math.round((s.sim.keystrokes / kills) * 100) / 100,
     };
-    this.data.runs.push(rec);
-    if (this.data.runs.length > MAX_RUNS) this.data.runs.splice(0, this.data.runs.length - MAX_RUNS);
-    if (s.score > this.data.highScore) this.data.highScore = s.score;
-    save(this.data);
+    this.store.set((save) => {
+      const lt = save.lifetime;
+      lt.runs.push(rec);
+      if (lt.runs.length > MAX_RUNS) lt.runs.splice(0, lt.runs.length - MAX_RUNS);
+      if (s.score > lt.highScore) lt.highScore = s.score;
+      lt.kills += s.sim.kills;
+    });
+    this.store.flush();
   }
 
   summary(): RunSummary {
@@ -167,9 +153,44 @@ export class Ledger {
 
   get highScore(): number { return this.data.highScore; }
 
-  clear(): void { this.data = emptyData(); save(this.data); }
-}
+  // ---------------------------------------------------------------- lifetime
+  // The death screen reports the run you just lost; the menu's `ledger` screen
+  // reports every run in the save, so these read `lifetime` rather than the
+  // per-run maps.
 
-function copy(z: Zombie): Zombie {
-  return { id: z.id, kind: z.kind, row: z.row, col: z.col, text: z.text, hp: z.hp, speed: z.speed };
+  /** Lifetime kills, summed at the end of each run. */
+  get lifetimeKills(): number { return this.data.kills; }
+
+  /** How many runs the save remembers (capped at MAX_RUNS). */
+  get runCount(): number { return this.data.runs.length; }
+
+  /** Most-pressed tokens across every run, commonest first. */
+  topUsedEver(n = 3): Array<[string, number]> {
+    const out: Array<[string, number]> = [];
+    for (const [tok, m] of Object.entries(this.data.motions)) {
+      if (m.used > 0) out.push([tok, m.used]);
+    }
+    out.sort((a, b) => (b[1] - a[1]) || (a[0] < b[0] ? -1 : 1));
+    return out.slice(0, n);
+  }
+
+  /** Tokens that would have been optimal and were never pressed, worst first. */
+  topMissedEver(n = 3): Array<[string, number]> {
+    const out: Array<[string, number]> = [];
+    for (const [tok, c] of Object.entries(this.data.missed)) {
+      if (c > 0) out.push([tok, c]);
+    }
+    out.sort((a, b) => (b[1] - a[1]) || (a[0] < b[0] ? -1 : 1));
+    return out.slice(0, n);
+  }
+
+  /** Keystrokes-per-kill for the last `n` runs, oldest first. */
+  kpkTrend(n = 8): number[] {
+    return this.data.runs.slice(-n).map((r) => r.kpk);
+  }
+
+  clear(): void {
+    this.store.set((save) => { save.lifetime = emptyLifetime(); });
+    this.store.flush();
+  }
 }

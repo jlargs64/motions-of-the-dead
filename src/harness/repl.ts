@@ -1,6 +1,10 @@
 // Phase F — the command grammar shared by the CLI and the replay checker.
 import { Game } from './api';
+import { LOG_VERSION } from './logversion';
+import { MISSIONS } from '../sim/missions';
 import type { GameEvent } from '../core/types';
+
+export { LOG_VERSION };
 
 export interface Repl {
   game: Game;
@@ -18,6 +22,7 @@ export const HELP = [
   '  state       print the full GameState as JSON',
   '  seed <n>    start a fresh run on seed n',
   '  auto on|off advance in real time between commands (default off)',
+  `  t [n]       start mission n (1..${MISSIONS.length}, default 1; boot camp is 1..8)`,
   '  help        this',
   '  quit / :q   exit',
 ].join('\n');
@@ -50,6 +55,17 @@ export function dispatch(r: Repl, raw: string): DispatchResult {
     r.seed = Number(s[1]);
     r.game = new Game(r.seed);
     return { out: `new run, seed ${r.seed}`, events: [], print: true };
+  }
+
+  // `t` is Vim's till-motion once a run is live, so missions need their own
+  // command here rather than a keystroke (DECISIONS #61).
+  const mi = /^(?:t|tutorial|mission)(?:\s+(\d+))?$/.exec(line);
+  if (mi) {
+    const n = mi[1] ? Number(mi[1]) : 1;
+    r.game.engine.reset();
+    r.game.menu.reset();
+    r.game.sim.startMission(n - 1);
+    return { out: `mission ${n}`, events: r.game.bus.drain(), print: true };
   }
 
   const a = /^auto\s+(on|off)$/.exec(line);

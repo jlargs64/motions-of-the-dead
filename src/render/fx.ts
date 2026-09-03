@@ -10,6 +10,8 @@ export const SHAKE_MAX = 14;         // shake units; 1 unit ~= SHAKE_UNIT cells
 export const LANE_FLASH_MS = 220;
 export const LANE_FLASH_WHITE_MS = 60;
 export const OVERKILL_MS = 500;
+/** How long a refusal notice stays up. Long enough to read mid-fight. */
+export const NOTICE_MS = 1400;
 export const SWEEP_MS = 700;
 
 /** A live shot: muzzle flash, tracer, and the covered-span underline. */
@@ -27,13 +29,13 @@ export class Fx {
   red = 0;
   /** red edge vignette pulse, 0..1 */
   vignette = 0;
-  /** unknown-key error wash, ms remaining */
-  error = 0;
   /** full-lane detonation flash: lane index, and ms elapsed */
   laneFlashRow = -1;
   laneFlashMs = 0;
   /** OVERKILL stamp, ms remaining of OVERKILL_MS */
   overkill = 0;
+  /** Refusal notice, ms remaining of NOTICE_MS. The text lives on Renderer. */
+  notice = 0;
   /** wave sweep, ms elapsed, or -1 when idle */
   sweepMs = -1;
   /** combo counter punch, 0..1 */
@@ -60,8 +62,8 @@ export class Fx {
     if (this.red > 0) { this.red -= dt * 3.6; if (this.red < 0) this.red = 0; }
     if (this.vignette > 0) { this.vignette -= dt * 2.2; if (this.vignette < 0) this.vignette = 0; }
     if (this.comboPop > 0) { this.comboPop -= dt * 4.5; if (this.comboPop < 0) this.comboPop = 0; }
-    if (this.error > 0) { this.error -= dtMs; if (this.error < 0) this.error = 0; }
     if (this.overkill > 0) { this.overkill -= dtMs; if (this.overkill < 0) this.overkill = 0; }
+    if (this.notice > 0) { this.notice -= dtMs; if (this.notice < 0) this.notice = 0; }
     if (this.muzzle > 0) { this.muzzle -= dtMs; if (this.muzzle < 0) this.muzzle = 0; }
     if (this.laneFlashRow >= 0) {
       this.laneFlashMs += dtMs;
@@ -110,16 +112,16 @@ export class Fx {
   flashWhite(v: number): void { if (v > this.white) this.white = v; }
   flashRed(v: number): void { if (v > this.red) this.red = v; }
   pulseVignette(v: number): void { if (v > this.vignette) this.vignette = v; }
-  flashError(ms: number): void { if (ms > this.error) this.error = ms; }
   stampOverkill(): void { this.overkill = OVERKILL_MS; }
+  stampNotice(): void { this.notice = NOTICE_MS; }
   detonateLane(row: number): void { this.laneFlashRow = row; this.laneFlashMs = 0; }
   sweep(): void { this.sweepMs = 0; }
   popCombo(): void { this.comboPop = 1; }
 
   reset(): void {
     this.shake = 0; this.white = 0; this.red = 0; this.vignette = 0;
-    this.error = 0; this.laneFlashRow = -1; this.laneFlashMs = 0;
-    this.overkill = 0; this.sweepMs = -1; this.comboPop = 0;
+    this.laneFlashRow = -1; this.laneFlashMs = 0;
+    this.overkill = 0; this.notice = 0; this.sweepMs = -1; this.comboPop = 0;
     this.muzzle = 0; this.shotCount = 0; this.shotRing = 0;
   }
 }

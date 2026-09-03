@@ -20,6 +20,9 @@ export const K_CHUNK = 1;  // blit a tumbling gib from the chunk atlas
 export const P_BLEEDS = 1; // deposits persistent gore where it lands
 export const P_GHOST = 2;  // ignores gravity and the ground entirely
 export const P_STICK = 4;  // dies on landing without depositing
+/** Lands, deposits once (if it also bleeds), bounces, then lies where it
+ *  stopped until its life runs out. A gib on the grass, not a droplet. */
+export const P_REST = 8;
 
 export type LandFn = (col: number, row: number, amount: number) => void;
 
@@ -85,6 +88,37 @@ export class Particles {
       let ny = this.y[i] + vy * dt;
 
       if (!ghost && ny >= this.ground[i]) {
+        if ((f & P_REST) !== 0) {
+          // a gib: stain the ground on first contact, bounce, then lie still
+          if ((f & P_BLEEDS) !== 0) {
+            let c = Math.round(nx);
+            if (c < 0) c = 0; else if (c > maxCol) c = maxCol;
+            let r = Math.round(this.ground[i]);
+            if (r < 0) r = 0; else if (r > maxRow) r = maxRow;
+            onLand(c, r, this.size[i] * 0.8);
+            this.flag[i] = f & ~P_BLEEDS;
+          }
+          ny = this.ground[i];
+          vy = -Math.abs(vy) * 0.30;
+          if (Math.abs(vy) < 2.0) {
+            vy = 0;
+            this.vx[i] = 0;
+            this.vr[i] = 0;
+            this.life[i] = l;
+            this.y[i] = ny;
+            i++;
+            continue;
+          }
+          this.life[i] = l;
+          this.vx[i] = vx * 0.55;
+          this.vy[i] = vy;
+          this.x[i] = nx;
+          this.y[i] = ny;
+          this.rot[i] += this.vr[i] * dt;
+          this.vr[i] *= 0.5;
+          i++;
+          continue;
+        }
         if ((f & P_BLEEDS) !== 0) {
           let c = Math.round(nx);
           if (c < 0) c = 0; else if (c > maxCol) c = maxCol;

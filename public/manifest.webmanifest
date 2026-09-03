@@ -1,0 +1,18 @@
+{
+  "name": "MOTIONS OF THE DEAD",
+  "short_name": "Motions",
+  "description": "A gory, nocturnal survival shooter where the only input is Vim normal-mode motions and operators. Zombies are words. You kill by editing.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "fullscreen",
+  "orientation": "landscape",
+  "background_color": "#0d1117",
+  "theme_color": "#0d1117",
+  "categories": ["games", "education"],
+  "icons": [
+    { "src": "./icon.svg", "sizes": "any", "type": "image/svg+xml" },
+    { "src": "./icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "./icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "./icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

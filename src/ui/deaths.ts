@@ -13,6 +13,13 @@ interface Line { when: (c: DeathCtx) => boolean; text: (c: DeathCtx) => string }
 
 const REACTIVE: Line[] = [
   {
+    // The overrun rule's own line (DECISIONS #89). First, because a run with no
+    // kills in it has nothing else worth saying: every other line below reads a
+    // statistic that is zero.
+    when: (c) => c.state.sim.kills === 0,
+    text: () => 'You killed nothing. They walked in and took the wall from you.',
+  },
+  {
     when: (c) => c.unknownKeys >= 5,
     text: (c) => `You reached for the arrow keys ${c.unknownKeys} times. They know.`,
   },

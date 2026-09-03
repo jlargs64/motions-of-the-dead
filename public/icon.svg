@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-label="MOTIONS OF THE DEAD">
+  <!-- The app icon. Three shapes, so it survives being scaled to 16px:
+       a Vim block cursor sitting on a glyph, the glyph inverting under it the
+       way it does in a real terminal, and the dried-blood underline the title
+       wordmark carries. Source of truth for every PNG in this directory —
+       regenerate them with `npm run icons`. -->
+  <rect width="512" height="512" fill="#0d1117"/>
+
+  <defs>
+    <clipPath id="cursor">
+      <rect x="280" y="108" width="176" height="296"/>
+    </clipPath>
+    <clipPath id="outside">
+      <rect x="0" y="0" width="280" height="512"/>
+      <rect x="456" y="0" width="56" height="512"/>
+    </clipPath>
+  </defs>
+
+  <!-- the block cursor -->
+  <rect x="280" y="108" width="176" height="296" fill="#e0a020"/>
+
+  <!-- the glyph: bone where it stands on the dark field... -->
+  <polyline points="92,372 92,152 256,300 420,152 420,372"
+            fill="none" stroke="#c9cbbd" stroke-width="56"
+            stroke-linejoin="miter" stroke-miterlimit="2" stroke-linecap="butt" clip-path="url(#outside)"/>
+  <!-- ...and knocked out to the background where the cursor covers it -->
+  <polyline points="92,372 92,152 256,300 420,152 420,372"
+            fill="none" stroke="#0d1117" stroke-width="56"
+            stroke-linejoin="miter" stroke-miterlimit="2" stroke-linecap="butt" clip-path="url(#cursor)"/>
+
+  <!-- dried blood, dragged east -->
+  <rect x="92" y="416" width="308" height="24" fill="#5a1a18"/>
+  <rect x="400" y="416" width="62" height="13" fill="#4a1512"/>
+</svg>

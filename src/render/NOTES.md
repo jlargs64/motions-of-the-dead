@@ -2,13 +2,23 @@
 
 Art direction target: **The Last Stand** (Con Artist Games, 2007). A wide
 nocturnal exterior lit by **one floodlight** on a post beside the house. Slate
-sky, black conifer treeline, fog on the horizon, trodden grass that falls into
-near-black at the west edge where the horde comes from. A junk-heap barricade
-(planks, a car door, a fridge, tyres, chain-link, sandbags) spans columns
-50..55; a survivor in a green jacket stands on a pallet behind it and aims
-left, downrange, at wherever the cursor is. The house he is defending fills the
-east edge, one window lit. The horde shambles in from column 0 as tall, gaunt
-silhouettes, each with its word above its head.
+sky, a black treeline of bare winter trunks, fog on the horizon, trodden grass
+that falls into
+near-black at the west edge where the horde comes from. A timber barricade
+(two posts, horizontal planks, cross-braced panels, a coil of barbed wire,
+sandbags at the foot) spans columns 50..55; a survivor in a green jacket stands
+on a pallet behind it with a bolt-action rifle and aims left, downrange, at
+wherever the cursor is. The house he is defending fills the east edge, one
+window lit. The horde shambles in from column 0 as gaunt, cel-shaded bodies —
+bare skull, forearms and shins pale against the dark ground — each with its
+word above its head.
+
+The second art pass followed a pixel-art asset sheet (walker / armored walker /
+runner / bloater / crawler, the survivor's rifle poses, timber barricade,
+sandbags, wire coils, floodlight pole, ammo boxes, decaying monospace letters,
+amber word banners). The game still ships **zero image assets**; the sheet was
+read and rebuilt in draw calls. The word under the cursor is printed as an
+**amber banner with ink letters**, and the crosshair inverts to ink over it.
 
 The previous renderer was a terminal — near-black with bone glyphs. That rule
 is revoked. This one is a *place*. The one thing that did not change: **the
@@ -27,7 +37,7 @@ atmospheric decision below is subordinate to that.
 | `particles.ts` | the fixed struct-of-arrays pool, capacity **2000** |
 | `fx.ts`        | screen-effect timers + the fixed-capacity shot ring |
 | `scene.ts`     | the static scene bake (back + front layers), `lightFalloff`, and the persistent gore layer |
-| `figures.ts`   | the procedural zombie figures (silhouette + rim, shaded by the light) and the survivor |
+| `figures.ts`   | the procedural zombie figures (two-tone cel-shaded bodies, lit by the lamp) and the survivor with his rifle |
 | `renderer.ts`  | the only entry point; geometry, draw order, HUD, the public API |
 
 ---
@@ -44,7 +54,7 @@ The renderer lays out **26 rows** total and centres them:
 row  -6 ┐
 row  -5 │  SKY BAND (6 rows)      night sky -> treeline -> fog
 row  -4 │    treeline tips reach up to row -4.7
-row  -3 │    conifer bases sit on the horizon at row -2.0
+row  -3 │    the scrub band the trunks stand in sits on the horizon at row -2.0
 row  -2 │    fog band spans rows -2.7 .. -0.85
 row  -1 ┘    far grass
 row   0 ┐
@@ -72,7 +82,7 @@ card is `panel(8, -2, 44, 18)`.
 | zombies-remaining strip | cols `15.8 .. 44.2`, row `-5.8 .. -5.4` |
 | combo counter | cols `46 .. ~53`, rows `-5.0 .. -2.6` (grows upward, bottom-anchored at row -2.6) |
 | barricade heap + sandbags | cols `49.4 .. 55.0`, all field rows |
-| survivor + pallet | cols `~54.6 .. 57`, rows `~6.7 .. 12.4` |
+| survivor + pallet | cols `~55.1 .. 58.2`, rows `~8.4 .. 12.4` |
 | house facade + floodlight post | cols `56.5 .. 60`, all rows (baked) |
 | showcmd | right-aligned ending at col `49.0`, row `17.0`, scale 2.1 |
 
@@ -94,13 +104,19 @@ from hard black bars.
 1. `bg` fill (only ever visible at the extreme edge during heavy shake)
 2. **shake transform pushed** (`ctx.save()` in `beginFrame`)
 3. **static back layer** — one `drawImage`. Sky gradient, horizon bloom, ragged
-   conifer treeline, grass gradient + mottled blotches + tufts, trodden ruts
+   treeline (scrub band + bare trunks), grass gradient + five flat depth bands
+   + mottled blotches + tufts, trodden ruts
    (no lane stripes), dried blood in the grass, fog band, the paving strip, the
    house facade with its lit window, the pallet, the floodlight post, the
    heap's westward shadow, and finally **the light**: the westward darkening
-   wash, the warm wedge from the lamp head, and the lamp glow.
+   wash, the warm elliptical ground pool, the short beam off the lamp head,
+   and the lamp glow.
 4. **gore layer** — one `drawImage`. Persistent ground splatter (skipped when
    `gore === 'off'`).
+4b. **lane bands** — every other lane darkened across the 52 walkable columns
+   (`RGBA.laneBand`), a pale hairline on the top of every lane. Sixteen
+   `fillRect`s. The scene bake still has no stripes; these are drawn over it
+   so they can sit under the figures and the words (DECISIONS #95).
 5. **barricade** — void, the east upright, per-lane leaning planks from the
    plank table, the four props, sandbags, barbed wire, caked blood.
 6. **zombie figures**, iterated lane 0..15 so nearer lanes overlap farther
@@ -110,7 +126,7 @@ from hard black bars.
 9. **shots** — tracers, then the covered-span underline.
 10. **particles** (glyph shards and gib chunks).
 11. **cursor** — lane tint + amber crosshair.
-12. **field FX** — lane detonation flash, wave sweep, error wash, vignette
+12. **field FX** — lane detonation flash, wave sweep, refusal wash, vignette
     pulse, red/white full-screen flashes.
 13. **static front layer** — film grain, corner vignette + soft letterbox,
     drawn with the shake transform *undone*, because the camera frame must not
@@ -138,12 +154,21 @@ lightFalloff(col) = 1 / (1 + ((LIGHT_COL - col) / 22)^2)     // 1 at the lamp
 That gives ~0.14 at column 0, ~0.34 at column 24, ~0.91 at column 48.
 
 - **The wash.** A horizontal linear gradient whose alpha at each column is
-  `(1 - lightFalloff(col)) * 0.86` over the ground and `* 0.45` over the sky
+  `(1 - lightFalloff(col)) * 0.62` over the ground and `* 0.45` over the sky
   and treeline, so the west edge goes near-black and the ground brightens
   toward the wall. Words are drawn on top and are never dimmed: a zombie at
   spawn is a nametag walking out of the dark, on purpose.
-- **The wedge.** A warm `lightWarm` polygon from the lamp head fanning west and
-  down over the ground, fading out by column 10.
+- **The ground pool.** A warm ellipse centred on the ground at column
+  `LIGHT_COL - 13`, radii 26 columns by 5.2 rows, painted with a radial gradient
+  under a `scale()` so it has **no straight edge anywhere**. The light lives on
+  the ground.
+- **The cone.** From the caged lamp head down and west to the pool: ten nested
+  wedges, each filled with the same whisper-faint radial gradient centred on
+  the lamp and *clipped* to the wedge, from the full width in to a sliver along
+  the axis. The sum is brightest on the axis and steps off so gently at the
+  sides that no straight edge survives; the gradient is already zero at the far
+  end. Earlier versions — a full-height wedge, then three bright wedges — read
+  as a translucent UI panel laid over the field.
 - **The lamp glow** around the head, spilling a little onto the sky and the
   house.
 - **The heap's shadow** falls west (the lamp is east of it).
@@ -185,8 +210,8 @@ row r+1.05+H  ---      feet / ground plane
 `feetRow = row + FIG_HEAD_GAP + figureHeightCells(kind)` with
 `FIG_HEAD_GAP = 1.05`, so the head top is always at least a cell below the word
 row and **never touches the glyphs** (the glyph box bottoms out around 0.9 of a
-cell). Figure heights in cell units: walker/armoured 3.2, runner 3.0, bloater
-3.35, crawler 1.1. A per-zombie scale of 0.9..1.1 (from `hash3(id, ..)`) grows
+cell). Figure heights in cell units: walker/armoured 3.4, runner 3.3, bloater
+3.3, crawler 1.25. A per-zombie scale of 0.9..1.1 (from `hash3(id, ..)`) grows
 or shrinks the body around the same feet; at 1.1 the head top rises ~0.1 cell
 into the gap, still clear of the glyphs.
 
@@ -201,25 +226,42 @@ The figure is horizontally centred on `z.col + text.length / 2` and faces
 
 ### Anatomy
 
-One figure is: a ground shadow (offset west, away from the lamp), the legs as
-one stroked path, the torso as one filled path (shoulders wider than the hips,
-one shoulder hitched, a four-point ragged hem), two dangling arms as one
-stroked path with pale hands, a small head hung forward off the shoulders with
-a dark skull cap and jaw shadow, a **rim stroke** down the east edge of torso
-and head in `FIG_RIM[shade]`, and (gore on) one wound smear. About 11 fills
-and strokes.
+Every figure is a body, cel-shaded in two flat tones per surface: a lit east
+face (`FIG_BODY`, `FIG_SKIN`) toward the lamp and a shadow west face
+(`FIG_BODY_DK`, `FIG_SKIN_DK`). Far limbs take the shadow tones, near limbs the
+lit ones, and the torso gets its west 42% painted over in shadow. Skin is the
+lightest thing on a figure and is what reads against the dark ground, so every
+kind shows some: bare skull, neck, forearms, hands, shins and feet on a walker.
+
+A walker is: a ground shadow (offset west, away from the lamp); two legs, each
+a cloth thigh to a knee at 26% of height and a skin shin to a foot; the far
+arm (sleeve, forearm, hand) hanging behind the torso; the torso as one filled
+path (shoulders wider than the hips, one hitched, a four-point ragged hem) with
+its shadow face; a neck; the near arm hanging in front with a hooked finger;
+the head — skull in two tones, a forward jaw, brow hollow, socket and mouth in
+`FIG_HOLLOW`, scalp on two of four head kinds, a rim of lamplight on the crown;
+one wound smear with a bright wet centre; blood down the chin; a rim on the
+front shoulder. Arms *hang* — down off the shoulder, bent at the elbow, hands
+below the hips — and a high hunch brings them forward; they never point.
 
 Per-zombie variation is re-derived from `hash3(id, 0x5a, 0x77)` every frame,
-allocation-free: height scale, hunch (how far the head hangs forward), one of
-four head shapes, hem raggedness, wound position.
+allocation-free: height scale, hunch (how far the head hangs forward and how
+far the hands reach), one of four head shapes, hem raggedness, wound position.
 
 ### Kind variations
 - **walker** — baseline shamble.
-- **armored** — a scrap plate across the chest in `FIG_PLATE[shade]`, which
-  stays recognisably the bracket green `#4a7c3f` at every step.
-- **runner** — lean, 26% forward lean, longer stride and reach, gait at 2x.
-- **bloater** — 0.72 of height wide, with a distended gut ellipse.
-- **crawler** — prone, low, legs dragging west, one arm clawing east.
+- **armored** — a helmet dome with a brim and a plate carrier with two pouches
+  and a strap, all in `FIG_PLATE[shade]`, which stays recognisably the bracket
+  green at every step; trousers and sleeves to the wrist, boots, skin only on
+  the face and hands.
+- **runner** — thin, 24% forward lean, double stride, arms thrown back, jaw
+  wide open, gait at 2x.
+- **bloater** — 0.66 of height wide: a shirt straining over the shoulders, a
+  pale distended gut (`FIG_BELLY`) slumping over the belt with a split down it,
+  short thick spread legs, arms held out wide, a small head sunk into the
+  shoulders.
+- **crawler** — on hands and knees facing east, legs dragging west along the
+  ground, head low at the front, a blood trail pooled under the body.
 
 ### Gait
 A 4-frame cycle read out of module-level `Float32Array` tables (`GAIT_LEG`,
@@ -259,10 +301,11 @@ letters.
 
 ## The barricade
 
-A junk heap, columns **50.0 .. 55.0**, spanning all 16 lanes. It is drawn per
+A timber wall, columns **50.0 .. 55.0**, spanning all 16 lanes. It is drawn per
 frame (damage removes material, and painting "less" over a baked image would
-mean re-baking on every HP quantum), but it is cheap: every plank comes from a
-table and every shape is a fill or one stroked path.
+mean re-baking on every HP quantum), but it is cheap: every shape is a
+`fillRect` or one stroked path, keyed on `hash3(lane, slot, salt)` so the wall
+is identical every frame for a given HP.
 
 `barricadeGlyphs(barricade)` is called by the renderer and cached: the result is
 a 16-char string, so it is only rebuilt when the HP ratio *quantised to 1/256*
@@ -270,34 +313,33 @@ changes. It is decoded into `wallLevels: Uint8Array(16)` each frame:
 `'#' -> 4, '=' -> 3, '-' -> 2, '.' -> 1, ' ' -> 0`. The frozen field contract
 makes lane 0 fail first.
 
-**The plank table.** 16 lanes x 3 planks, laid out once at module load from
-`hash3(lane, i, 0x9e)`: centre (fractions of the wall width / lane height),
-length, thickness, tone (one of four timbers) and an angle in -18..+18 degrees
-pre-resolved to `cos`/`sin`. A plank is a filled quad plus a lit top edge —
-two draw calls, no transforms, no trig.
+**Structure.** Two full-height **posts** (west at 16% of the wall width, east at
+70%), dark timber with a lit east face. Between their centres, per lane, up to
+three **horizontal planks** at 5%, 37% and 69% of the lane height, each 26% of
+a lane thick: a slab in one of four timber tones, a lit top edge, a dark under
+edge, a nail at each end, and a knot on one plank in eight. Over every panel of
+**four lanes**, an **X of cross-braces** (two thick diagonals with a lit edge).
+The posts are drawn after the planks so the plank ends tuck behind them.
 
 Per lane, by level:
 
 | level | planks | extra |
 |---|---|---|
 | 4 | 3 | — |
-| 3 | 2 | — |
-| 2 | 2 | three splinters off the west face; the lane's prop drops to an outline |
-| 1 | 1 stub (45% length) | splinters |
-| 0 | none | **breach**: void, two plank ends, one fallen plank on the ground, a red glow on the west lip; no barbed wire |
+| 3 | 2 (slots 0 and 2) | slot 1 is a splintered stub off one post |
+| 2 | 1 (slot 1) | slots 0 and 2 are stubs |
+| 1 | 0 | three stubs |
+| 0 | 0 | **breach**: two stubs, a red glow on the west lip; no wire on this lane |
 
-**Props**, one per lane group, drawn on top of the planks and as broken as the
-group's worst lane (full at level >= 3, outline at 2, gone below):
-
-- lanes 0..2 — a **chain-link panel**: frame + diagonal lattice
-- lanes 3..5 — a **car door**, rust, window up
-- lanes 8..10 — a **fridge**, upright, door seam and handles
-- lanes 13..15 — a **stack of three tyres**
+A panel keeps both braces while its worst lane is at level >= 2, one brace at
+level 1, none once a lane is breached.
 
 **Dressing.** The whole wall column is filled with `void_` first, so every gap
-opens onto darkness for free. One full-height upright on the east side carries
-the **barbed wire** zig-zag (barbs skipped on breached lanes). **Sandbags** pile
-at the west foot in the bottom four lanes.
+opens onto darkness for free. A **coil of barbed wire** runs down the west face
+— narrow rings every half lane, a barb glinting on every other one, skipped on
+breached lanes. **Sandbags** heap against the west foot: a four-wide, three-course
+pyramid at the bottom and a three-wide, two-course one at lane 8, each bag a
+lozenge with a dark underside and a lit crown.
 
 **Blood cakes the base of the heap and accumulates across the run** in
 `wallGore: Float32Array(16)`, fed by `barricade_hit` and by any gore particle
@@ -312,22 +354,28 @@ wall, recomputed every frame in `indexZombies`.
 
 ## The survivor
 
-Standing at column **55.6**, feet on row **12.2**, on a pallet baked into the
-back layer, about 5.5 cells tall. Head, dark hair, green jacket with a lit east
-edge and a shaded back, braced legs and boots, a tucked back arm — all fills
-and one stroked path.
+Standing at column **56.9**, feet on row **12.2**, on a pallet baked into the
+back layer, 4 cells tall. Cropped dark hair, a face in shadow (he faces away
+from the lamp), a bright green field jacket with a lit east face and a shaded
+west face, a pale shirt at the throat, braced trousered legs and boots.
 
-The **front arm actually points at the cursor**: the aim vector is computed in
-*pixel* space (cells are not square) from the shoulder to the centre of the
-cursor cell, every frame. `dx` is clamped to `<= -1` so he always aims
-downrange, and a zero-length vector falls back to straight left. The rifle is
-a long dark barrel continuing the arm line, and `drawSurvivor` writes the
-muzzle position into a caller-owned `Float64Array(2)` so the flash and tracers
-agree with the drawn arm without allocating a point.
+The **rifle actually points at the cursor**: the aim vector is computed in
+*pixel* space (cells are not square) from the firing shoulder to the centre of
+the cursor cell, every frame. `dx` is clamped to `<= -1` so he always aims
+downrange, and a zero-length vector falls back to straight left. The
+**bolt-action rifle** — wooden stock from the butt behind the shoulder to the
+forestock, a steel barrel running on to 74% of his height, bolt handle, trigger
+guard — is built from points in the aim basis `(ux,uy)` plus the perpendicular
+`(uy,-ux)`, so it holds its shape at any angle. The rear arm goes to the grip
+behind the torso, the front arm reaches out to the forestock, and both hands
+are drawn last. `drawSurvivor` writes the muzzle position into a caller-owned
+`Float64Array(2)` so the flash and tracers agree with the drawn rifle without
+allocating a point. Three olive **ammo crates** sit on the paving at his feet.
 
 East of him, baked: a strip of cracked paving, the **house facade** (clapboard,
-one lit and half-boarded window at rows -2..0.5) filling columns 57..60 top to
-bottom, and the **floodlight post**.
+one lit and half-boarded window at rows -2..0.5) filling columns 58..60 top to
+bottom, and the **floodlight post** at `POST_COL` 57.9 — east of `SURV_COL`
+56.9, or it grows out of the survivor's head.
 
 ---
 
@@ -360,19 +408,54 @@ gore: GoreLevel;   // public mutable, default 'full'
 | | `'off'` | `'low'` | `'full'` |
 |---|---|---|---|
 | word | grey glyphs lift and fade (ghost, no gravity) | letters scatter and land | letters scatter and land |
-| figure | a puff of grey motes | — | cloth / flesh / dark-blood chunks |
-| droplets | none | 3, dark | 5..12, escalating |
-| arterial spray | none | none | at combo >= 10 or a bloater burst |
+| figure | a puff of grey motes | — | cloth / flesh / dark-blood / bone gibs that land and lie on the grass, plus one skull |
+| droplets | none | 3, dark | 10..24, escalating |
+| red mist | none | none | 14..44 tiny bright drops, low and wide |
+| arterial spray | none | none | every kill; cone widens with combo and on a bloater burst |
 | ground gore | none | 35% deposit weight | full |
 | blood in the baked grass | not baked | baked | baked |
 | wall caking | none | yes | yes |
-| flashes | white/amber substituted for red | red | red |
+| flashes | white/amber substituted for red | red | red, plus a faint red pulse per kill |
 | vignette pulse | slate | blood | blood |
 
 Escalation with `state.combo` is `min(1, combo / 12)`, applied to droplet count,
-limb-chunk count and spray density. A bloater killed by `dd`/`D` forces the
-heavy path regardless of combo: 1.8x velocity spread, 1.35x chunk size, a lane
-detonation flash and an 8-unit shake.
+mist count, limb-chunk count, spray density and the spray cone. A bloater killed
+by `dd`/`D` forces the heavy path regardless of combo: 1.8x velocity spread,
+1.4x chunk size, a lane detonation flash and an 8-unit shake.
+
+**Maiming.** A partial hit (an `x`, a `d$` that only reaches halfway) takes
+letters off the word, and the renderer takes body parts off the figure to
+match. `indexZombies` keeps each zombie's length from the previous frame in
+`zpos`; when it shrinks and the figure was not armored (brackets are not
+flesh), the difference is added to `ZPos.lost` and `maim()` fires a small burst
+from the side that was shot: up to three resting gibs (flesh, cloth, bone),
+droplets, and at `full` a short squirt the way the shot went. `lost` is passed
+to `drawZombie` as `maim`, which removes parts in a fixed order:
+
+| letters lost | walker / runner / armored | bloater |
+|---|---|---|
+| 1 | near arm becomes a stump | near arm becomes a stump |
+| 2 | far arm becomes a stump | far arm becomes a stump |
+| 3 | a hole through the flank | the gut is opened |
+| 4 | the top of the skull is gone | the top of the skull is gone |
+| 5+ | a second hole, high on the back | a second hole in the gut |
+
+**Hobbled** is separate from the maim ladder: `Zombie.hobbled` (DECISIONS #94)
+is passed to `drawZombie` as its own flag. The far leg ends in a `stump()` at
+the knee dragging on the ground, and the stride shortens to 45%. A bloater's
+far leg does the same. The letter that came off with it still fires `maim()`
+as usual, so the shot has its gibs.
+
+One letter left is a crawler regardless (`figureKind`), and the sim flips the
+kind to match (DECISIONS #92), so the last step of the sequence is the whole
+figure going down on its hands. Stumps and wounds are painted in `FIG_HOLLOW`
+alone when gore is off.
+
+**Gibs rest.** Limb chunks and the skull carry `P_REST | P_BLEEDS`: on first
+ground contact they stain the cell once and drop the bleed bit, then bounce
+with a 0.30 restitution and come to a stop (velocity and spin zeroed) where
+they lie for the rest of a 1.6..3.4 s life, fading out over the last 45%.
+Droplets, mist and spray stay `P_BLEEDS` only and vanish on impact.
 
 `'off'` is a first-class mode, not a stub: kills still shake the screen, still
 stamp OVERKILL, still get a full-lane detonation for bloaters, and the glyphs
@@ -381,12 +464,15 @@ still visibly come apart. It just does it in grey. Switching `gore` to or from
 blood on the next frame.
 
 **Ground gore persists for the whole run.** Truth is
-`GoreLayer.grid: Float32Array(60 * 19)` in cell space, capped at 6 per cell;
-the painted canvas is derived from it. Each deposit stamps one deterministic
-ellipse plus three specks. On resize the layer is rebuilt from the grid, which
-approximates the accumulated look with 1..4 blobs per cell rather than
-replaying every historical deposit — close enough that a resize does not read
-as a reset.
+`GoreLayer.grid: Float32Array(60 * 19)` in cell space, capped at `GORE_CAP`
+(10) per cell; the painted canvas is derived from it. Each deposit stamps one
+deterministic pool, a splash tail thrown off it at a hashed angle, and six
+specks. Tone follows the cell's *accumulated* level, not the deposit: under 2.2
+it is dry, above that the pool is painted in wet `blood`, and past 4.5 it gets a
+`bloodBright` centre, so a lane that keeps getting killed in visibly soaks
+through. On resize the layer is rebuilt from the grid, which approximates the
+accumulated look with 1..5 blobs per cell rather than replaying every
+historical deposit — close enough that a resize does not read as a reset.
 
 Gore can land in rows `-1 .. 18` (`GORE_TOP = -1`, `GORE_EXTRA = 3`), so
 splatter from lane 15 lands on the foreground band rather than being clipped.
@@ -440,11 +526,22 @@ displays, tiled with `createPattern` at bake time) under the radial vignette
 
 ## Cursor
 
+When the cursor sits on a word, `drawWords` paints that word as a solid
+**amber banner** (`PALETTE.amber`) with **ink** glyphs instead of a dark scrim
+with bone glyphs, and sets `cursorOnWord` so the crosshair brackets go to ink
+too. Not while the store is placing: there the crosshair is the placement
+cursor and the play cursor is not what `<CR>` acts on.
+
 The cursor is a **crosshair**, not a caret — `virtualedit=all` means it spends
 most of its life on bare ground. Four amber corner brackets around the cell, a
 centre pip, and a pulsing alpha. It never knocks out the glyph beneath it, so a
 targeted letter stays readable. A very faint amber tint (`alpha 0.055`) runs
 the width of the field across the cursor's lane, so `j`/`k` reads instantly.
+When a zombie stands anywhere in that lane the tint goes **hot**: a warmer
+orange at 0.16 with a bright hairline top and bottom (`laneCursorHot`,
+`laneCursorEdge`), so a horizontal cut is known to have a target before it is
+typed. `indexZombies` fills a 16-bit `laneMask` for this and for the gutter,
+where an occupied lane's number prints in bone rather than dim (DECISIONS #95).
 
 ---
 
@@ -469,7 +566,8 @@ scrim; crawlers and 1-char words render at `alpha 0.78`. Armoured brackets stay
 `rgba(13,17,23,0.30)` to knock the value down. This is a deliberate substitute
 for `ctx.filter = 'saturate(...)'`, which is expensive and unevenly supported.
 The dim is applied *before* the HUD so the HUD stays readable, and the UI layer
-draws its pause card on top of everything.
+draws its pause card on top of everything. The card is `panel(14, -1, 32, 18)`:
+it grew three rows for the `w  save & quit` row in survival (DECISIONS #96).
 
 ---
 

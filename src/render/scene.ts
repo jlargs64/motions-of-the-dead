@@ -35,9 +35,11 @@ export const FOG_BOT_ROW = -0.85;
 /** left edge of the survivor's paving, in columns */
 export const PAVING_COL = 54.6;
 /** the house facade starts here and runs to the east edge of the screen */
-export const HOUSE_COL = 57.0;
+export const HOUSE_COL = 58.0;
 /** the floodlight post stands here, between the survivor and the house */
-export const POST_COL = 56.7;
+// East of SURV_COL, or the post grows out of the survivor's head. The lamp
+// head stays at LIGHT_COL and the arm just reaches further west.
+export const POST_COL = 57.9;
 
 // --- the one light source --------------------------------------------------
 // A floodlight on a post at the top of the wall, east side. It is the only
@@ -147,39 +149,53 @@ export class Scene {
     }
 
     // --- treeline ----------------------------------------------------------
+    // Ref docs/ref/A-target-frame.png: a solid black scrub band with bare
+    // winter trunks rising out of it. The old version was a row of conifer
+    // triangles, which read as a sawblade rather than as trees.
     const treeBase = yHor + g.ch * 0.25;
     const maxH = Math.max(4, treeBase - yTree);
     cx.fillStyle = PALETTE.tree;
+
+    // the scrub mass the trunks stand in: one solid band with a ragged top
+    const scrubH = maxH * 0.30;
     cx.beginPath();
     cx.moveTo(-2, treeBase + 2);
-    const step = Math.max(3, g.cw * 0.55);
-    let tx = -2;
-    let i = 0;
-    while (tx < g.w + step) {
-      const hh = 0.35 + rng.next() * 0.65;
-      const th = maxH * hh;
-      const half = step * (0.9 + rng.next() * 1.5);
-      // a conifer: ragged left slope up to a point, ragged right slope down
-      const tip = tx + half;
-      const tiers = 3;
-      for (let t = tiers; t >= 1; t--) {
-        const f = t / tiers;
-        cx.lineTo(tx + half * (1 - f * 0.92), treeBase - th * (1 - f) - th * 0.06 * rng.next());
-        cx.lineTo(tx + half * (1 - f * 0.62), treeBase - th * (1 - f * 0.78));
-      }
-      cx.lineTo(tip, treeBase - th);
-      for (let t = 1; t <= tiers; t++) {
-        const f = t / tiers;
-        cx.lineTo(tip + half * (f * 0.62), treeBase - th * (1 - f * 0.78));
-        cx.lineTo(tip + half * (f * 0.92), treeBase - th * (1 - f) - th * 0.06 * rng.next());
-      }
-      tx = tip + half;
-      i++;
-      if (i > 2000) break;
+    for (let x = -2; x < g.w + g.cw; x += Math.max(4, g.cw * 0.7)) {
+      cx.lineTo(x, treeBase - scrubH * (0.55 + rng.next() * 0.75));
     }
     cx.lineTo(g.w + 4, treeBase + 2);
     cx.closePath();
     cx.fill();
+
+    // bare trees: a tapered trunk with forking branches, spaced irregularly
+    const gap = Math.max(8, g.cw * 2.6);
+    cx.strokeStyle = PALETTE.tree;
+    cx.lineCap = 'round';
+    for (let x = -gap * 0.5; x < g.w + gap; x += gap * (0.55 + rng.next() * 0.9)) {
+      const th = maxH * (0.55 + rng.next() * 0.45);
+      const top = treeBase - th;
+      const tw = Math.max(1.2, g.cw * (0.13 + rng.next() * 0.10));
+      cx.beginPath();
+      cx.moveTo(x - tw, treeBase);
+      cx.lineTo(x - tw * 0.35, top);
+      cx.lineTo(x + tw * 0.35, top);
+      cx.lineTo(x + tw, treeBase);
+      cx.closePath();
+      cx.fill();
+      const forks = 3 + ((rng.next() * 3) | 0);
+      for (let f = 0; f < forks; f++) {
+        const t = 0.30 + (f / forks) * 0.62;
+        const by = treeBase - th * t;
+        const dir = f % 2 === 0 ? -1 : 1;
+        const len = th * (0.16 + rng.next() * 0.22);
+        cx.lineWidth = Math.max(1, tw * (0.72 - t * 0.40));
+        cx.beginPath();
+        cx.moveTo(x, by);
+        cx.lineTo(x + dir * len * 0.80, by - len * 0.75);
+        cx.lineTo(x + dir * len * 1.15, by - len * 1.35);
+        cx.stroke();
+      }
+    }
 
     // --- ground ------------------------------------------------------------
     const yBot = g.h;
@@ -189,6 +205,21 @@ export class Scene {
     grass.addColorStop(1, PALETTE.fieldDeep);
     cx.fillStyle = grass;
     cx.fillRect(0, yHor - 1, g.w, yBot - yHor + 2);
+
+    // banded depth. Ref docs/ref/A-target-frame.png reads the ground as a few
+    // flat value steps rather than one smooth ramp; the smooth version went
+    // muddy and gave the eye nothing to measure distance against.
+    const BAND_A = [0.00, 0.055, 0.075, 0.030, -0.075];
+    for (let bi = 0; bi < BAND_A.length; bi++) {
+      const a = BAND_A[bi];
+      if (a === 0) continue;
+      const y0 = yHor + (yBot - yHor) * (bi / BAND_A.length);
+      const y1 = yHor + (yBot - yHor) * ((bi + 1) / BAND_A.length);
+      cx.fillStyle = a > 0
+        ? `rgba(214,230,204,${a.toFixed(3)})`
+        : `rgba(8,14,10,${(-a).toFixed(3)})`;
+      cx.fillRect(0, y0, g.w, y1 - y0 + 1);
+    }
 
     // mottled noise: soft irregular blotches, low alpha, never per frame
     const blots = 520;
@@ -200,7 +231,7 @@ export class Scene {
       const rx = g.cw * (0.8 + rng.next() * 3.4) * (0.5 + depth);
       const ry = rx * (0.20 + rng.next() * 0.22);
       cx.globalAlpha = 0.030 + rng.next() * 0.055;
-      cx.fillStyle = rng.next() < 0.5 ? '#4d5f56' : '#1e2723';
+      cx.fillStyle = rng.next() < 0.5 ? '#3a4a41' : '#141a17';
       cx.beginPath();
       cx.ellipse(x, y, rx, ry, 0, 0, Math.PI * 2);
       cx.fill();
@@ -261,16 +292,16 @@ export class Scene {
 
     // --- dried blood in the grass -----------------------------------------
     if (!goreOff) {
-      for (let b = 0; b < 26; b++) {
+      for (let b = 0; b < 40; b++) {
         // heavily weighted toward the foot of the barricade
         const f = rng.next();
         const col = 52 - f * f * 46;
         const row = rng.next() * g.rows;
         const x = xOf(col);
         const y = yOf(row) + g.ch * 0.6;
-        const rx = g.cw * (1.2 + rng.next() * 4.2);
-        const ry = g.ch * (0.18 + rng.next() * 0.42);
-        cx.globalAlpha = 0.10 + rng.next() * 0.20;
+        const rx = g.cw * (1.2 + rng.next() * 4.8);
+        const ry = g.ch * (0.18 + rng.next() * 0.48);
+        cx.globalAlpha = 0.14 + rng.next() * 0.24;
         cx.fillStyle = PALETTE.bloodDry;
         cx.beginPath();
         cx.ellipse(x, y, rx, ry, (rng.next() - 0.5) * 0.5, 0, Math.PI * 2);
@@ -356,23 +387,57 @@ export class Scene {
       cx.fillStyle = grad;
       cx.fillRect(0, y0, xOf(LIGHT_COL), y1 - y0);
     };
-    wash(0.86, yHor - 1, g.h);   // ground
-    wash(0.45, 0, yHor);          // sky + treeline
+    wash(0.70, yHor - 1, g.h);   // ground
+    wash(0.50, 0, yHor);          // sky + treeline
 
-    // 2. the wedge: lamp head -> far west, top of field to below the field
-    const farX = xOf(-4);
-    const wedge = cx.createLinearGradient(lx, 0, xOf(10), 0);
-    wedge.addColorStop(0, 'rgba(205,178,119,0.22)');
-    wedge.addColorStop(0.35, 'rgba(205,178,119,0.10)');
-    wedge.addColorStop(1, 'rgba(205,178,119,0)');
-    cx.fillStyle = wedge;
+    // 2. the ground pool. Ref docs/ref/D-lighting.png band 1: the light lives
+    //    on the GROUND as a warm ellipse and has no straight edge anywhere.
+    const poolCx = xOf(LIGHT_COL - 13);
+    const poolCy = yOf(g.rows * 0.58);
+    const poolRx = g.cw * 26;
+    const poolRy = g.ch * 5.4;
+    cx.save();
+    cx.translate(poolCx, poolCy);
+    cx.scale(1, poolRy / poolRx);
+    const pool = cx.createRadialGradient(0, 0, 0, 0, 0, poolRx);
+    pool.addColorStop(0, 'rgba(242,230,190,0.36)');
+    pool.addColorStop(0.45, 'rgba(226,205,150,0.20)');
+    pool.addColorStop(0.78, 'rgba(205,178,119,0.07)');
+    pool.addColorStop(1, 'rgba(205,178,119,0)');
+    cx.fillStyle = pool;
     cx.beginPath();
-    cx.moveTo(lx, ly);
-    cx.lineTo(farX, yOf(-0.5));
-    cx.lineTo(farX, yOf(g.rows + BAND_BOTTOM + 1));
-    cx.lineTo(lx, yOf(g.rows + BAND_BOTTOM + 1));
-    cx.closePath();
+    cx.arc(0, 0, poolRx, 0, Math.PI * 2);
     cx.fill();
+    cx.restore();
+
+    // the cone in the air: from the lamp head down and west to the pool. Ref
+    // sheet, "Light Gags". Ten nested wedges, each a whisper, from the full
+    // width in to a sliver along the axis: the sum is brightest on the axis
+    // and steps off so gently at the sides that no straight edge survives.
+    // The radial fill is already zero at the far end.
+    const eLx = poolCx - poolRx * 0.60, eLy = poolCy - poolRy * 0.35;   // west edge, far
+    const eRx = poolCx + poolRx * 0.62, eRy = poolCy + poolRy * 1.05;   // east edge, near
+    const coneR = Math.hypot(eLx - lx, eLy - ly) * 1.02;
+    const cone = cx.createRadialGradient(lx, ly, 0, lx, ly, coneR);
+    cone.addColorStop(0, 'rgba(242,230,190,0.030)');
+    cone.addColorStop(0.35, 'rgba(236,218,170,0.016)');
+    cone.addColorStop(0.80, 'rgba(226,205,150,0.006)');
+    cone.addColorStop(1, 'rgba(205,178,119,0)');
+    const mx = (eLx + eRx) * 0.5, my = (eLy + eRy) * 0.5;
+    for (let pass = 0; pass < 10; pass++) {
+      const t = pass * 0.09;
+      cx.save();
+      cx.beginPath();
+      cx.moveTo(lx - g.cw * 0.5, ly - g.ch * 0.1);
+      cx.lineTo(lx + g.cw * 0.5, ly - g.ch * 0.1);
+      cx.lineTo(eRx + (mx - eRx) * t, eRy + (my - eRy) * t);
+      cx.lineTo(eLx + (mx - eLx) * t, eLy + (my - eLy) * t);
+      cx.closePath();
+      cx.clip();
+      cx.fillStyle = cone;
+      cx.fillRect(lx - coneR, ly - coneR, coneR * 2, coneR * 2);
+      cx.restore();
+    }
 
     // 3. the lamp head glow
     const r = g.ch * 5.5;
@@ -382,9 +447,32 @@ export class Scene {
     glow.addColorStop(1, 'rgba(242,230,190,0)');
     cx.fillStyle = glow;
     cx.fillRect(lx - r, ly - r, r * 2, r * 2);
-    // the head itself: a small bright rectangle on the west face of the post
+    // the head itself: a round caged floodlight hanging off the arm, tipped
+    // down and west. Ref sheet, "Floodlight Pole".
+    const hr = g.ch * 0.42;
+    cx.save();
+    cx.translate(lx, ly);
+    cx.rotate(-0.55);
+    cx.fillStyle = '#20232a';
+    cx.beginPath();
+    cx.ellipse(0, 0, hr * 1.1, hr * 0.78, 0, 0, Math.PI * 2);
+    cx.fill();
     cx.fillStyle = PALETTE.light;
-    cx.fillRect(lx - g.cw * 0.55, ly - g.ch * 0.16, g.cw * 0.7, g.ch * 0.32);
+    cx.beginPath();
+    cx.ellipse(0, hr * 0.08, hr * 0.92, hr * 0.60, 0, 0, Math.PI * 2);
+    cx.fill();
+    cx.strokeStyle = '#20232a';
+    cx.lineWidth = Math.max(1, g.ch * 0.045);
+    cx.beginPath();
+    for (let i = -1; i <= 1; i++) { cx.moveTo(i * hr * 0.42, -hr * 0.6); cx.lineTo(i * hr * 0.42, hr * 0.7); }
+    cx.moveTo(-hr * 0.95, hr * 0.1); cx.lineTo(hr * 0.95, hr * 0.1);
+    cx.stroke();
+    // the hood over the top
+    cx.fillStyle = '#2a2e37';
+    cx.beginPath();
+    cx.ellipse(0, -hr * 0.30, hr * 1.15, hr * 0.42, 0, Math.PI, Math.PI * 2);
+    cx.fill();
+    cx.restore();
   }
 
   /**
@@ -448,8 +536,8 @@ export class Scene {
     cx.strokeRect(wx, wy, ww, wh);
 
     // the pallet the survivor stands on: two courses of slats
-    const palX = xOf(54.7);
-    const palW = g.cw * 2.1;
+    const palX = xOf(55.75);
+    const palW = g.cw * 2.5;
     const palY = yOf(12.2);
     cx.fillStyle = PALETTE.timberShadow;
     cx.fillRect(palX, palY - g.ch * 0.30, palW, g.ch * 0.30);
@@ -470,11 +558,28 @@ export class Scene {
     // arm to the lamp head
     cx.fillStyle = '#20232a';
     cx.fillRect(xOf(LIGHT_COL) - g.cw * 0.2, yOf(LIGHT_ROW) - g.ch * 0.45, postX - xOf(LIGHT_COL) + g.cw * 0.2, Math.max(1, g.ch * 0.12));
-    // the hood over the lamp head
-    cx.fillRect(xOf(LIGHT_COL) - g.cw * 0.9, yOf(LIGHT_ROW) - g.ch * 0.40, g.cw * 1.2, Math.max(1, g.ch * 0.16));
+    // ammo crates at his feet, on the paving. Ref sheet, "Ammo Boxes".
+    this.crate(cx, g, xOf(55.05), yOf(13.05), g.cw * 1.35, g.ch * 0.62);
+    this.crate(cx, g, xOf(55.25), yOf(12.45), g.cw * 1.1, g.ch * 0.55);
+    this.crate(cx, g, xOf(56.55), yOf(13.30), g.cw * 1.0, g.ch * 0.40);
     // ground foot
     cx.fillStyle = 'rgba(0,0,0,0.40)';
     cx.fillRect(postX - g.cw * 0.5, yOf(g.rows - 1.3), g.cw, g.ch * 0.16);
+  }
+
+  /** An olive ammo crate: lid seam, two rope handles, a lit top edge. */
+  private crate(cx: CanvasRenderingContext2D, g: SceneGeo, x: number, y: number, w: number, h: number): void {
+    cx.fillStyle = 'rgba(0,0,0,0.40)';
+    cx.fillRect(x - w * 0.08, y + h - g.ch * 0.03, w * 1.16, g.ch * 0.10);
+    cx.fillStyle = '#3f4630';
+    cx.fillRect(x, y, w, h);
+    cx.fillStyle = '#2a3020';
+    cx.fillRect(x, y + h * 0.30, w, Math.max(1, h * 0.06));                // lid seam
+    cx.fillRect(x + w * 0.12, y + h * 0.48, w * 0.14, Math.max(1, h * 0.10)); // handles
+    cx.fillRect(x + w * 0.74, y + h * 0.48, w * 0.14, Math.max(1, h * 0.10));
+    cx.fillRect(x, y, Math.max(1, w * 0.06), h);                             // shadow side
+    cx.fillStyle = '#5a6444';
+    cx.fillRect(x, y, w, Math.max(1, h * 0.09));                             // lit top edge
   }
 
   // --- front -------------------------------------------------------------
@@ -491,7 +596,7 @@ export class Scene {
       const h = hashCell(i & 127, i >> 7, 0x6e);
       const v = (h & 1) ? 235 : 8;
       d[i * 4] = v; d[i * 4 + 1] = v; d[i * 4 + 2] = v;
-      d[i * 4 + 3] = 10 + (((h >>> 8) & 255) / 255) * 5;   // 0.04..0.06
+      d[i * 4 + 3] = 5 + (((h >>> 8) & 255) / 255) * 3;    // 0.02..0.03
     }
     if (typeof (cx as { putImageData?: unknown }).putImageData !== 'function') return null;
     cx.putImageData(img, 0, 0);
@@ -551,6 +656,8 @@ export class Scene {
 /** rows above / below the field that gore can land in */
 export const GORE_TOP = -1;
 export const GORE_EXTRA = 3;
+/** per-cell intensity ceiling; past this a cell is as soaked as it gets */
+export const GORE_CAP = 10;
 
 export class GoreLayer {
   readonly grid: Float32Array;
@@ -593,7 +700,7 @@ export class GoreLayer {
     for (let r = 0; r < this.rowsSpan; r++) {
       for (let c = 0; c < this.cols; c++) {
         const v = grid[r * this.cols + c];
-        if (v > 0) this.paint(c, r + GORE_TOP, v, false);
+        if (v > 0) this.paint(c, r + GORE_TOP, v, v, false);
       }
     }
   }
@@ -605,34 +712,59 @@ export class GoreLayer {
     if (r < 0 || r >= this.rowsSpan) return;
     const i = r * this.cols + col;
     const prev = this.grid[i];
-    if (prev >= 6) return;
+    if (prev >= GORE_CAP) return;
     const v = prev + (amount > 0 ? amount : 0.2);
-    this.grid[i] = v > 6 ? 6 : v;
-    if (this.ready) this.paint(col, row, this.grid[i] - prev, true);
+    this.grid[i] = v > GORE_CAP ? GORE_CAP : v;
+    if (this.ready) this.paint(col, row, this.grid[i] - prev, this.grid[i], true);
   }
 
-  private paint(col: number, row: number, v: number, incremental: boolean): void {
+  /**
+   * One stamp. `v` is the amount being painted now (the delta for a live
+   * deposit, the whole cell for a rebuild); `total` is the cell's accumulated
+   * level, which picks the tone: fresh cells are dark and dry-looking, a cell
+   * that has been bled on repeatedly goes wet and red and finally bright.
+   */
+  private paint(col: number, row: number, v: number, total: number, incremental: boolean): void {
     const cx = this.cx;
     const x = (col + 0.5) * this.cw;
     const y = (row - GORE_TOP + 0.75) * this.ch;
-    const n = incremental ? 1 : Math.min(4, 1 + Math.floor(v));
+    const n = incremental ? 1 : Math.min(5, 1 + Math.floor(v * 0.6));
+    const wet = total > 2.2;
     for (let k = 0; k < n; k++) {
       const h = hashCell(col, row, k * 7 + (incremental ? (v * 97) | 0 : 0));
-      const jx = ((h & 255) / 255 - 0.5) * this.cw * 1.4;
-      const jy = (((h >>> 8) & 255) / 255 - 0.5) * this.ch * 0.7;
-      const rx = this.cw * (0.35 + ((h >>> 16) & 255) / 255 * 0.75) * (0.7 + v * 0.18);
+      const jx = ((h & 255) / 255 - 0.5) * this.cw * 1.6;
+      const jy = (((h >>> 8) & 255) / 255 - 0.5) * this.ch * 0.8;
+      const rx = this.cw * (0.45 + ((h >>> 16) & 255) / 255 * 0.9) * (0.8 + v * 0.22);
       const ry = rx * 0.42;
-      cx.globalAlpha = Math.min(0.42, 0.09 + v * 0.06);
-      cx.fillStyle = v > 3 ? PALETTE.blood : PALETTE.bloodDry;
+      // the pool: dry underneath, red on top once the cell is soaked
+      cx.globalAlpha = Math.min(0.62, 0.16 + v * 0.14);
+      cx.fillStyle = wet ? PALETTE.blood : PALETTE.bloodDry;
       cx.beginPath();
       cx.ellipse(x + jx, y + jy, rx, ry, 0, 0, Math.PI * 2);
       cx.fill();
-      // a couple of specks so the edge is not a clean oval
-      for (let s = 0; s < 3; s++) {
+      if (total > 4.5) {
+        // a bright wet centre where it is deepest
+        cx.globalAlpha = Math.min(0.40, 0.10 + v * 0.10);
+        cx.fillStyle = PALETTE.bloodBright;
+        cx.beginPath();
+        cx.ellipse(x + jx, y + jy, rx * 0.55, ry * 0.5, 0, 0, Math.PI * 2);
+        cx.fill();
+      }
+      // a splash tail thrown off the pool, so the stamp has a direction
+      const ta = (((h >>> 24) & 255) / 255) * Math.PI;
+      cx.globalAlpha = Math.min(0.5, 0.12 + v * 0.10);
+      cx.fillStyle = wet ? PALETTE.blood : PALETTE.bloodDry;
+      cx.beginPath();
+      cx.ellipse(x + jx + Math.cos(ta) * rx * 1.1, y + jy + Math.sin(ta) * ry * 0.9,
+        rx * 0.9, ry * 0.22, ta, 0, Math.PI * 2);
+      cx.fill();
+      // specks so the edge is not a clean oval, flung wider than the pool
+      for (let s = 0; s < 6; s++) {
         const hs = hashCell(col, row, k * 31 + s * 5 + 3);
-        const sx = x + jx + ((hs & 255) / 255 - 0.5) * rx * 3.4;
-        const sy = y + jy + (((hs >>> 8) & 255) / 255 - 0.5) * ry * 3.2;
-        cx.fillRect(sx, sy, this.cw * 0.12, this.ch * 0.05);
+        const sx = x + jx + ((hs & 255) / 255 - 0.5) * rx * 4.4;
+        const sy = y + jy + (((hs >>> 8) & 255) / 255 - 0.5) * ry * 4.0;
+        const sw = this.cw * (0.08 + ((hs >>> 16) & 255) / 255 * 0.14);
+        cx.fillRect(sx, sy, sw, sw * 0.5);
       }
     }
     cx.globalAlpha = 1;

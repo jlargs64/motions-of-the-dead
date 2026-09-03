@@ -73,6 +73,41 @@ export class GlyphAtlas {
         cx.fillText(String.fromCharCode(code), g * this.gw + halfW, y);
       }
     }
+    this.decay(cx);
+  }
+
+  /**
+   * Wear on the letters — the ref sheet's "Monospace Letters (Decaying)". A
+   * couple of rust specks and one scratch per glyph, painted `source-atop` so
+   * they only ever land on glyph pixels and never dirty the cell around them.
+   * Deterministic per (glyph, colour) so the atlas is the same every build.
+   * Skipped when the glyph is too small for a speck to be anything but noise.
+   */
+  private decay(cx: CanvasRenderingContext2D): void {
+    if (this.gh < 14) return;
+    const gw = this.gw, gh = this.gh;
+    const sw = Math.max(1, Math.round(gw * 0.14));
+    const sh = Math.max(1, Math.round(gh * 0.05));
+    cx.globalCompositeOperation = 'source-atop';
+    for (let ci = 1; ci < this.colors; ci++) {
+      for (let g = 0; g < GLYPH_COUNT; g++) {
+        if (g === 0) continue;
+        let h = (g * 0x9e3779b1 ^ ci * 0x85ebca6b) >>> 0;
+        for (let k = 0; k < 3; k++) {
+          h = (h ^ (h >>> 15)) * 0x2c1b3c6d >>> 0;
+          h = (h ^ (h >>> 12)) * 0x297a2d39 >>> 0;
+          const x = g * gw + gw * 0.10 + (h & 255) / 255 * gw * 0.80;
+          const y = ci * gh + gh * 0.18 + ((h >>> 8) & 255) / 255 * gh * 0.64;
+          cx.fillStyle = k < 2 ? 'rgba(90,58,36,0.78)' : 'rgba(13,17,23,0.55)';
+          cx.fillRect(x, y, sw, sh);
+        }
+        if ((h >>> 20 & 7) < 3) {
+          cx.fillStyle = 'rgba(13,17,23,0.40)';
+          cx.fillRect(g * gw, ci * gh + gh * (0.30 + ((h >>> 24) & 63) / 63 * 0.40), gw, Math.max(1, Math.round(gh * 0.025)));
+        }
+      }
+    }
+    cx.globalCompositeOperation = 'source-over';
   }
 
   /** Blit one glyph. px/py are the cell's top-left in CSS pixels. */

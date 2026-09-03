@@ -5,6 +5,7 @@ import type { GameEvent } from '../core/types';
 import { VimEngine } from '../vim/engine';
 import { Sim } from '../sim/sim';
 import { splitKeys } from '../sim/optimal';
+import { Menu } from '../ui/menu';
 import { renderText } from './format';
 
 export interface GameOpts {
@@ -18,6 +19,13 @@ export class Game {
   readonly bus = new Bus();
   readonly sim: Sim;
   readonly engine = new VimEngine();
+  /**
+   * The main menu's model. `src/ui/menu.ts` is pure - no canvas, no DOM, no
+   * store - so the headless harness can hold it and an agent drives exactly
+   * the same menu the browser does. `main.ts` reads this instance rather than
+   * building its own.
+   */
+  readonly menu = new Menu();
   private readonly dtMs: number;
   private carry = 0;
 
@@ -32,24 +40,105 @@ export class Game {
   /** Feed keystrokes. Use Vim <Esc> / <CR> notation for specials. */
   keys(s: string): GameEvent[] {
     for (const k of splitKeys(s)) {
-      // Outside a live run, `i` inserts you back into the horde.
-      if (this.sim.state.phase !== 'playing') {
+      const phase = this.sim.state.phase;
+      // The menu is a real screen with real motions; keys go to it, not the
+      // Vim engine. `t` is gone: missions are the `missions` row now.
+      if (phase === 'menu' || phase === 'title') { this.feedMenu(k); continue; }
+      // The store is the other screen the sim owns outright. `main.ts` routes
+      // shop keys through here rather than through a switch of its own, so a
+      // log containing a shopping trip replays identically in both builds
+      // (DECISIONS #77).
+      if (phase === 'shop') { this.feedShop(k); continue; }
+      // On the death screen `i` still inserts you back into the horde.
+      if (phase !== 'playing') {
         if (k === 'i') { this.engine.reset(); this.sim.start(); }
-        else if (k === 't') { this.engine.reset(); this.sim.startTutorial(); }
         continue;
       }
-      // `r` is Vim's replace, which this game does not implement; during the
-      // warm-up it restarts the current step instead of beeping.
-      if (k === 'r' && this.sim.state.sim.tutorial >= 0) {
-        this.engine.reset();
-        this.sim.retryTutorialStep();
-        continue;
-      }
+      if (this.sim.state.sim.mission >= 0) { this.feedMission(k); continue; }
       this.sim.noteKeystroke();
       const cmd = this.engine.feed(k);
       if (cmd) this.sim.apply(cmd);
     }
     return this.bus.drain();
+  }
+
+  /**
+   * One keystroke inside a mission (DECISIONS #91). `r` is Vim's replace,
+   * which this game does not implement, so in TRY it restarts the beat and in
+   * DONE it retries; DONE also takes `n` for the next mission and `<Esc>` back
+   * to the list, and nothing else. Every TRY key counts against par, half-typed
+   * commands and the `<Esc>` that clears them included.
+   */
+  private feedMission(k: string): void {
+    const sm = this.sim.state.sim;
+    if (sm.missionBeat === 'done') {
+      if (k === 'n') { this.engine.reset(); this.sim.nextMission(); }
+      else if (k === 'r') { this.engine.reset(); this.sim.retryMission(); }
+      else if (k === '<Esc>') { this.engine.reset(); this.leaveMission(); }
+      return;
+    }
+    if (k === 'r') { this.engine.reset(); this.sim.retryMission(); return; }
+    this.sim.noteMissionKey();
+    this.sim.noteKeystroke();
+    const cmd = this.engine.feed(k);
+    if (cmd) this.sim.apply(cmd);
+  }
+
+  /** Out of a mission and back onto the list, with the cursor on it. */
+  leaveMission(): void {
+    const i = this.sim.state.sim.mission;
+    this.sim.toMenu();
+    this.menu.reset();
+    this.menu.open('missions', i);
+  }
+
+  /**
+   * One store keystroke. Four keys are intercepted before the Vim engine sees
+   * them - `<CR>`, `<Esc>`, and in list mode `l` and `n` - because the engine
+   * would read them as a motion, a reset and a search repeat. Everything else
+   * is a real command: it moves the selection, or the placement crosshair.
+   *
+   * Store keys are not counted into `sim.keystrokes`, for the same reason menu
+   * keys are not: keystrokes-per-kill is a measure of how you fight.
+   */
+  private feedShop(k: string): void {
+    const shop = this.sim.state.sim.shop;
+    // A plant mission runs in this phase, so `r` has to reach the retry here
+    // too - during a mission it is not a Vim key - and its keys count.
+    if (this.sim.state.sim.mission >= 0) {
+      if (k === 'r') { this.engine.reset(); this.sim.retryMission(); return; }
+      this.sim.noteMissionKey();
+    }
+    if (k === '<CR>') { this.engine.reset(); this.sim.shopEnter(); return; }
+    if (k === '<Esc>') { this.engine.reset(); this.sim.shopCancel(); return; }
+    if (shop.mode === 'list') {
+      if (k === 'l') { this.engine.reset(); this.sim.shopBuy(); return; }
+      if (k === 'n') { this.engine.reset(); this.sim.shopResume(); return; }
+    }
+    const cmd = this.engine.feed(k);
+    if (cmd) this.sim.shopCommand(cmd);
+  }
+
+  /** One menu keystroke. Only the two actions the sim owns are carried out;
+   *  screen navigation happens inside the Menu itself. */
+  private feedMenu(k: string): void {
+    const a = this.menu.feed(k);
+    if (!a) return;
+    if (a.t === 'start') { this.engine.reset(); this.menu.reset(); this.sim.start(a.mode); }
+    else if (a.t === 'mission') { this.engine.reset(); this.menu.reset(); this.sim.startMission(a.index); }
+  }
+
+  /**
+   * Pick a suspended run back up (DECISIONS #96): the engine forgets any
+   * half-typed command and the sim takes the snapshot. The browser's menu
+   * calls this from its `resume` row; headless it is how a test proves a
+   * restored run steps identically to the one it was cut from.
+   */
+  restore(state: GameState, progress?: Record<string, number>): void {
+    this.engine.reset();
+    this.carry = 0;
+    this.sim.restore(state, progress);
+    this.bus.drain();
   }
 
   /** Advance sim time in fixed steps. Deterministic. */
@@ -63,7 +152,9 @@ export class Game {
     return this.bus.drain();
   }
 
-  text(): string { return renderText(this.sim.state, this.engine.pending()); }
+  text(): string {
+    return renderText(this.sim.state, this.engine.pending(), this.menu.lines());
+  }
   json(): GameState { return this.sim.state; }
   isOver(): boolean { return this.sim.state.phase === 'dead'; }
   pending(): string { return this.engine.pending(); }

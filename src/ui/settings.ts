@@ -1,31 +1,40 @@
-// Phase E - player settings. localStorage only, and it must never throw.
+// Phase E - player settings. A view over `save.settings`; the store owns the
+// persistence, so nothing here touches localStorage.
 import type { GoreLevel } from '../render/renderer';
-
-const KEY = 'motd.settings';
+import { coerceSettings, defaultSettings } from '../save/schema';
+import type { SaveStore } from '../save/save';
 
 export type LineNumbers = 'off' | 'absolute' | 'relative';
 
-export interface Settings { gore: GoreLevel; lineNumbers: LineNumbers }
+export interface Settings {
+  gore: GoreLevel;
+  lineNumbers: LineNumbers;
+  /** slot -> cosmetic id. Empty until `armory` lands. */
+  equipped: Record<string, string>;
+}
 
-const DEFAULTS: Settings = { gore: 'full', lineNumbers: 'relative' };
 const NUM_ORDER: LineNumbers[] = ['relative', 'absolute', 'off'];
 const GORE_ORDER: GoreLevel[] = ['full', 'low', 'off'];
 
-export function loadSettings(): Settings {
-  try {
-    const raw = globalThis.localStorage?.getItem(KEY);
-    if (!raw) return { ...DEFAULTS };
-    const d = JSON.parse(raw) as Partial<Settings>;
-    return {
-      gore: GORE_ORDER.includes(d.gore as GoreLevel) ? d.gore as GoreLevel : 'full',
-      lineNumbers: NUM_ORDER.includes(d.lineNumbers as LineNumbers)
-        ? d.lineNumbers as LineNumbers : 'relative',
-    };
-  } catch { return { ...DEFAULTS }; }
+/** A detached copy, so a caller mutating it does not skip the store. */
+export function loadSettings(store: SaveStore): Settings {
+  const s = coerceSettings(store.get().settings);
+  return { gore: s.gore, lineNumbers: s.lineNumbers, equipped: { ...s.equipped } };
 }
 
-export function saveSettings(s: Settings): void {
-  try { globalThis.localStorage?.setItem(KEY, JSON.stringify(s)); } catch { /* private window */ }
+export function saveSettings(store: SaveStore, s: Settings): void {
+  store.set((save) => {
+    save.settings = {
+      gore: GORE_ORDER.includes(s.gore) ? s.gore : 'full',
+      lineNumbers: NUM_ORDER.includes(s.lineNumbers) ? s.lineNumbers : 'relative',
+      equipped: { ...s.equipped },
+    };
+  });
+}
+
+export function defaultUiSettings(): Settings {
+  const d = defaultSettings();
+  return { gore: d.gore, lineNumbers: d.lineNumbers, equipped: {} };
 }
 
 export function cycleGore(g: GoreLevel): GoreLevel {

@@ -2,7 +2,7 @@
 import { createInterface } from 'node:readline';
 import { appendFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { HELP, dispatch, newRepl, summarize } from './repl';
+import { HELP, LOG_VERSION, dispatch, newRepl, summarize } from './repl';
 
 const argSeed = Number(process.argv[2]);
 const seed = Number.isFinite(argSeed) && argSeed > 0 ? argSeed : 1;
@@ -18,7 +18,7 @@ function log(obj: unknown): void {
   appendFileSync(logPath, JSON.stringify(obj) + '\n');
 }
 
-log({ t: 'init', seed, fixedDt: 1 / 60 });
+log({ t: 'init', seed, fixedDt: 1 / 60, version: LOG_VERSION });
 
 process.stdout.write(HELP + '\n\n');
 process.stdout.write(repl.game.text() + '\n');
