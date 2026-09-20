@@ -75,6 +75,9 @@ export class Ledger {
       if (m.used === 0) fresh = true;
       m.used++;
     }
+    // `motions` was mutated through the live object rather than `store.set`,
+    // so the save has to be told it changed or `flush()` will skip it.
+    this.store.touch();
     // At most one per command, however many new tokens it pressed.
     if (fresh) this.bus.emit({ t: 'medal', name: FIRST_BLOOD, bonus: STYLE_BONUS[FIRST_BLOOD] });
   }
@@ -84,6 +87,7 @@ export class Ledger {
       const m = this.data.motions[tok] ?? (this.data.motions[tok] = { used: 0, kills: 0 });
       m.kills++;
     }
+    this.store.touch();
   }
 
   /** What the sim's oracle comparison means for the death screen's tables. */
@@ -98,6 +102,8 @@ export class Ledger {
       this.optimalTokens.set(tok, (this.optimalTokens.get(tok) ?? 0) + 1);
       if (!this.usedThisRun.has(tok)) this.data.missed[tok] = (this.data.missed[tok] ?? 0) + 1;
     }
+    // Same in-place write, same reason (DECISIONS #99).
+    this.store.touch();
   }
 
   /** Every medal, wherever it came from, counts and pays lifetime salvage. */

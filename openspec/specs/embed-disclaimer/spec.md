@@ -27,7 +27,7 @@ The analytics topic SHALL say the game uses a cookieless analytics service, SHAL
 
 #### Scenario: The policy covers the game
 - **WHEN** a reader reads the Analytics section of the privacy policy
-- **THEN** it states that the embedded game reports to the same Umami website as the blog with `data-auto-track="false"`, so a visit is counted once rather than twice, and lists the four events and the fields each one carries
+- **THEN** it states that the embedded game reports to the same Umami website as the blog with `data-auto-track="false"`, so a visit is counted once rather than twice, and lists the four events by their prefixed names and the fields each one carries
 
 ### Requirement: The local-save line matches what the game stores
 The storage topic SHALL state that progress is saved in the reader's own browser under `motd.save`, is never transmitted, and is lost if they clear site data. It SHALL NOT promise a cloud save or an account.
