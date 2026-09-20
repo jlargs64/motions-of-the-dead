@@ -25,9 +25,15 @@ draws is an asset — every glyph and figure is drawn procedurally, every sound 
 synthesized in WebAudio at load time, the only font is the system monospace
 stack. The one exception is the browser's own furniture: `public/icon.svg` is
 the favicon, and `npm run icons` bakes the PNG sizes iOS and Android insist on
-plus the social card from it. No network calls, no analytics, no backend.
-`localStorage` holds one versioned save blob under
-`motd.save` — see [Your save](#your-save) — and the mute flag, and nothing else.
+plus the social card from it. No backend. One third-party tag — a deferred
+[Umami](https://umami.is) script, cookieless and honouring Do Not Track — sends
+four counts and nothing else: `run_start`, `run_end`, `mission_done`,
+`drill_done`, carrying integers and short enums. It reports only from
+`justinlargo.com`, so a local checkout is silent, and `src/analytics/` is a
+no-op whenever the script is absent or blocked. `localStorage` holds one
+versioned save blob under `motd.save` — see [Your save](#your-save) — and the
+mute flag, and nothing else. Neither the save nor anything derived from it is
+ever sent.
 
 ## Controls
 

@@ -63,13 +63,15 @@ export const ABOUT_PAGES: readonly AboutPage[] = [
     ],
   },
   {
-    id: 'build', label: 'the build', hint: 'no assets, no network',
+    id: 'build', label: 'the build', hint: 'no assets, no accounts',
     body: [
       'Vite, TypeScript and Canvas 2D, with zero runtime dependencies. Nothing '
       + 'here is an asset: every glyph and figure is drawn procedurally and '
       + 'every sound is synthesised when the page loads.',
-      'No network calls, no analytics, no accounts. Your save is one blob in '
-      + 'this browser\'s localStorage, and the save screen carries it elsewhere.',
+      'No backend and no accounts. One cookieless tag counts four things - '
+      + 'runs started and ended, missions and drills finished - and never who '
+      + 'did them. Your save is one blob in this browser\'s localStorage, is '
+      + 'never sent, and the save screen carries it elsewhere.',
       'Made by Justin Largo. The horde is a text buffer.',
     ],
   },

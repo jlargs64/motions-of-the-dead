@@ -29,6 +29,20 @@
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <meta name="apple-mobile-web-app-title" content="Motions" />
+
+    <!-- Usage analytics. The blog's Umami website, because the account's plan
+         allows exactly one. `data-auto-track="false"` is what makes sharing it
+         honest: this page sends no pageview of its own, so a `/projects/` visit
+         is not counted twice - once by the blog's footer tag and again by this
+         iframe. Only the four events in `src/analytics/` are sent, and
+         `data-domains` keeps dev servers and forks silent. -->
+    <script
+      defer
+      src="https://cloud.umami.is/script.js"
+      data-website-id="52e96d3b-5dfa-472a-bf54-422c61c7de68"
+      data-domains="justinlargo.com"
+      data-do-not-track="true"
+      data-auto-track="false"></script>
     <style>
       html, body { margin: 0; padding: 0; height: 100%; background: #0a0a0c; overflow: hidden; }
       canvas { display: block; width: 100vw; height: 100vh; image-rendering: pixelated; cursor: none; }
