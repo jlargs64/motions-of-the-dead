@@ -118,6 +118,24 @@ export class SaveStore {
     this.timer = setTimeout(() => { this.timer = null; this.flush(); }, 0);
   }
 
+  /**
+   * Mark the save dirty after a caller mutated `get()` in place, without
+   * scheduling anything. The Ledger writes `lifetime.motions` and
+   * `lifetime.missed` once per token per command, which is far too hot for a
+   * timer and a `JSON.stringify` each time; it touches instead, and the write
+   * lands on the next `flush()` - endRun, a visibility change, or unload.
+   *
+   * Without this an in-place write is invisible to `flush()`, which returns
+   * early on `!pending`. That is how a whole drill session's motion history
+   * used to vanish on reload: drills pay no salvage and count no medal, so
+   * nothing else ever scheduled a persist, and every token came back unpressed
+   * to spam FIRST BLOOD all over again (DECISIONS #99).
+   */
+  touch(): void {
+    this.save.updatedAt = Date.now();
+    this.pending = true;
+  }
+
   /** Write now if anything is pending. Synchronous, so a visibility handler can call it. */
   flush(): boolean {
     if (this.timer !== null) { clearTimeout(this.timer); this.timer = null; }

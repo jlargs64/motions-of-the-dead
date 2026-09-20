@@ -1364,6 +1364,58 @@ that is accepted, not solved. The about page's "the build" tab was rewritten in
 the same commit - it claimed no network calls, and that claim is retracted, as
 is README's.
 
+**99. The Ledger's in-place writes mark the save dirty themselves.**
+`lifetime.motions` and `lifetime.missed` are written straight through
+`store.get()` rather than `store.set()`, once per token per command, because a
+timer and a `JSON.stringify` on every keystroke is not something the hot path
+can afford. The cost was that `flush()` never saw them: it returns early on
+`!pending`, and nothing in the Ledger had set it. The history only reached
+localStorage when some *other* write happened to schedule a persist first.
+
+In survival that mostly hid the bug, since FIRST BLOOD itself pays salvage and
+counts a medal, and both go through `store.set()`. Drills are where it showed.
+A drill counts no medal and pays no salvage - its only economy touch is the
+personal best - and it never emits `death`, so `endRun()` does not run either.
+Nothing scheduled a persist, `flush()` on unload did nothing, and an entire
+session of practice was dropped. Next boot every token was unpressed again and
+FIRST BLOOD fired for the lot of them, which is precisely backwards: the drills
+screen is where you go *to* press motions you do not know.
+
+`SaveStore.touch()` marks the save dirty and stamps `updatedAt` without
+scheduling anything, so the hot path stays free of timers and writes and the
+data still lands on the next `flush()` - endRun, a visibility change, or unload.
+`updatedAt` is stamped because `merge()` picks a winner by it, and a save whose
+motions moved while its timestamp did not would lose an import it should win.
+
+**100. Every analytics event is prefixed with the project.**
+One Umami website carries the whole site, and more projects are coming. A bare
+`run_end` is fine while the game is the only thing sending events and useless
+the moment a second one does - two projects would have to agree, forever, never
+to pick the same word. `motd:` on the front makes the four names sort together
+in the events list, filter with one prefix, and stay unambiguous without any
+coordination. `eventName()` in `src/analytics/index.ts` is the only place a name
+is built, so the prefix cannot drift between the four call sites, and
+`EVENT_PREFIX` is exported for the test that asserts every sent name carries it.
+Umami allows 50 characters for a name; the longest here is 18.
+
+**101. FIRST BLOOD is earned on a kill, not on a keypress.**
+It fired on the first lifetime *use* of a token, which meant pressing `l` to
+move right earned a medal called FIRST BLOOD. Measured on a fresh save that is
+21 medals across 33 keystrokes in one drill - two keys in every three - and 9 in
+a survival run to wave 6. `CALLOUT_MAX` is 3 and `CALLOUT_MS` is 1100, so most
+of them were never even seen; they just pushed the multi-kills and the style
+medals off the band before the player could read them. The salvage was real but
+the callout was noise, and at `STYLE_BONUS` 0 it paid no score to justify the
+space.
+
+The check moved from `onCommand` to `onKill`, against `m.kills === 0` rather
+than `m.used === 0`: the first lifetime kill a token takes, at most one per
+kill however many tokens drew blood together. A drill drops to nought or two,
+a survival run to about four, and the medal means what its name says. `used` is
+still counted on every command, so the ledger's tables, the coach's `need()`
+and the death screen's "never used" list are all unchanged - only the medal
+moved.
+
 ## Subsystem notes
 
 Renderer-specific and audio-specific calls — glyph atlas, particle pooling,

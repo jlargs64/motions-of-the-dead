@@ -782,23 +782,38 @@ describe('FIRST BLOOD and lifetime salvage', () => {
   }
   const cmd = (raw: string) => ({ count: 1, raw });
 
-  it('fires once on the first lifetime use of a token, and never again', () => {
+  const kill = (via: string) => ({ t: 'kill' as const, zombieId: 1, kind: 'walker' as any, via, overkill: false });
+
+  it('fires once on the first lifetime kill with a token, and never again', () => {
     const { bus, seen } = rig();
-    bus.emit({ t: 'command', cmd: cmd('fd') as any, ms: 0 });
+    bus.emit(kill('fd'));
     expect(seen).toEqual([FIRST_BLOOD]);
-    bus.emit({ t: 'command', cmd: cmd('fd') as any, ms: 0 });
+    bus.emit(kill('fd'));
     expect(seen).toEqual([FIRST_BLOOD]);
   });
 
-  it('at most one per command, however many new tokens it presses', () => {
-    const { bus, seen } = rig();
+  // The whole point of moving it off `command` (DECISIONS #101): pressing a
+  // motion is not drawing blood, and on a fresh save the keypress rule fired
+  // on two keys in every three.
+  it('never fires for a keypress that took no kill', () => {
+    const { bus, seen, store } = rig();
+    bus.emit({ t: 'command', cmd: cmd('l') as any, ms: 0 });
     bus.emit({ t: 'command', cmd: cmd('d3w') as any, ms: 0 });
+    expect(seen).toEqual([]);
+    // ...but the usage still lands, so the ledger and the coach are unaffected.
+    expect(store.get().lifetime.motions.l.used).toBe(1);
+    expect(store.get().lifetime.motions.w.used).toBe(1);
+  });
+
+  it('at most one per kill, however many new tokens it took', () => {
+    const { bus, seen } = rig();
+    bus.emit(kill('d3w'));
     expect(seen.filter((n) => n === FIRST_BLOOD)).toHaveLength(1);
   });
 
   it('pays salvage and never supplies', () => {
     const { bus, store } = rig();
-    bus.emit({ t: 'command', cmd: cmd('fd') as any, ms: 0 });
+    bus.emit(kill('fd'));
     expect(store.get().salvage).toBe(FIRST_BLOOD_SALVAGE);
     expect(store.get().lifetime.medals[FIRST_BLOOD]).toBe(1);
   });
@@ -819,6 +834,57 @@ describe('FIRST BLOOD and lifetime salvage', () => {
     bus.emit({ t: 'death', wave: 3, score: 100 });
     bus.emit({ t: 'wave_start', n: 1, unlocks: [] });
     expect(store.get().salvage).toBe(before);
+  });
+
+  // The Ledger writes `motions` straight through the live object rather than
+  // `store.set`, so it has to mark the save dirty itself. Drills are the case
+  // that used to lose the lot: they count no medal and pay no salvage, and
+  // they never emit `death`, so nothing else scheduled a persist and every
+  // token came back unpressed to fire FIRST BLOOD again (DECISIONS #99).
+  it('flushes motion usage a drill built, so it is not fresh again next boot', () => {
+    const mem = new MemStore();
+    (globalThis as any).localStorage = mem;
+    const st = createState(1);
+    st.sim.mode = 'drill';
+    const bus = new Bus();
+    const store = new SaveStore(defaultSave());
+    new Ledger(st, bus, store);
+
+    bus.emit({ t: 'command', cmd: cmd('fd') as any, ms: 0 });
+    expect(store.get().lifetime.motions.f.used).toBe(1);
+    // No medal counted and no salvage paid in a drill, so the touch is the
+    // only thing that can have marked the save dirty.
+    expect(store.get().lifetime.medals[FIRST_BLOOD]).toBeUndefined();
+    expect(store.flush()).toBe(true);
+
+    const reloaded = new SaveStore(load());
+    expect(reloaded.get().lifetime.motions.f.used).toBe(1);
+
+    // And the token is no longer fresh, so it stays quiet on the next boot.
+    const seen: string[] = [];
+    const bus2 = new Bus();
+    new Ledger(createState(1), bus2, reloaded);
+    bus2.on('medal', (e) => seen.push(e.name));
+    bus2.emit({ t: 'command', cmd: cmd('fd') as any, ms: 0 });
+    expect(seen).not.toContain(FIRST_BLOOD);
+  });
+
+  it('flushes a survival run that earned no medal and never died', () => {
+    (globalThis as any).localStorage = new MemStore();
+    const save = defaultSave();
+    // Already pressed, so this command wins no FIRST BLOOD and nothing else
+    // writes: the touch is the only thing that can mark the save dirty.
+    save.lifetime.motions.l = { used: 1, kills: 0 };
+    const store = new SaveStore(save);
+    const bus = new Bus();
+    const seen: string[] = [];
+    new Ledger(createState(1), bus, store);
+    bus.on('medal', (e) => seen.push(e.name));
+
+    bus.emit({ t: 'command', cmd: cmd('l') as any, ms: 0 });
+    expect(seen).toEqual([]);
+    expect(store.flush()).toBe(true);
+    expect(load().lifetime.motions.l.used).toBe(2);
   });
 });
 

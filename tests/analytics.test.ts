@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { Bus } from '../src/core/bus';
-import { attachAnalytics } from '../src/analytics';
+import { EVENT_PREFIX, attachAnalytics } from '../src/analytics';
 import { track } from '../src/analytics/umami';
 
 type Sent = { name: string; data?: Record<string, unknown> };
@@ -16,10 +16,10 @@ function stub(): Sent[] {
 
 /** The allowlist, restated here so a change to `src/analytics` has to change a test. */
 const ALLOWED: Record<string, string[]> = {
-  run_start: [],
-  run_end: ['wave', 'score'],
-  mission_done: ['id', 'stars'],
-  drill_done: ['family', 'perfect', 'scenes'],
+  'motd:run_start': [],
+  'motd:run_end': ['wave', 'score'],
+  'motd:mission_done': ['id', 'stars'],
+  'motd:drill_done': ['family', 'perfect', 'scenes'],
 };
 
 let detach: () => void;
@@ -35,7 +35,7 @@ describe('the allowlist', () => {
     bus.emit({ t: 'wave_clear', n: 1, ms: 9000 });
     bus.emit({ t: 'wave_start', n: 2, unlocks: [] });
     bus.emit({ t: 'death', wave: 5, score: 4200 });
-    expect(sent.map((s) => s.name)).toEqual(['run_start', 'run_end']);
+    expect(sent.map((s) => s.name)).toEqual(['motd:run_start', 'motd:run_end']);
     expect(sent[1].data).toEqual({ wave: 5, score: 4200 });
   });
 
@@ -49,8 +49,8 @@ describe('the allowlist', () => {
     const sent = stub();
     bus.emit({ t: 'mission_done', id: 'bc-3', keys: 14, par: 11, stars: 2 });
     bus.emit({ t: 'drill_done', family: 'counts', kills: 18, perfect: 12, scenes: 20 });
-    expect(sent[0]).toEqual({ name: 'mission_done', data: { id: 'bc-3', stars: 2 } });
-    expect(sent[1]).toEqual({ name: 'drill_done', data: { family: 'counts', perfect: 12, scenes: 20 } });
+    expect(sent[0]).toEqual({ name: 'motd:mission_done', data: { id: 'bc-3', stars: 2 } });
+    expect(sent[1]).toEqual({ name: 'motd:drill_done', data: { family: 'counts', perfect: 12, scenes: 20 } });
   });
 
   it('stays silent through the loud events', () => {
@@ -68,6 +68,20 @@ describe('the allowlist', () => {
     bus.emit({ t: 'buy', item: 'mine', cost: 20 });
     bus.emit({ t: 'revive' });
     expect(sent).toEqual([]);
+  });
+
+  it('prefixes every event with the project, so a second one cannot collide', () => {
+    const sent = stub();
+    bus.emit({ t: 'wave_start', n: 1, unlocks: [] });
+    bus.emit({ t: 'death', wave: 5, score: 4200 });
+    bus.emit({ t: 'mission_done', id: 'bc-3', keys: 14, par: 11, stars: 2 });
+    bus.emit({ t: 'drill_done', family: 'counts', kills: 18, perfect: 12, scenes: 20 });
+    expect(sent).toHaveLength(4);
+    for (const s of sent) {
+      expect(s.name.startsWith(`${EVENT_PREFIX}:`)).toBe(true);
+      // Umami caps an event name at 50 characters.
+      expect(s.name.length).toBeLessThanOrEqual(50);
+    }
   });
 
   it('keeps every payload to numbers and short enums', () => {
@@ -109,11 +123,11 @@ describe('analytics never fails the game', () => {
     bus.emit({ t: 'wave_start', n: 1, unlocks: [] });   // no umami yet
     const sent = stub();                                 // tag arrives
     bus.emit({ t: 'death', wave: 2, score: 10 });
-    expect(sent.map((s) => s.name)).toEqual(['run_end']); // no replayed run_start
+    expect(sent.map((s) => s.name)).toEqual(['motd:run_end']); // no replayed run_start
   });
 
   it('exports a track() that is safe to call directly', () => {
-    expect(() => track('run_start')).not.toThrow();
+    expect(() => track('motd:run_start')).not.toThrow();
   });
 });
 

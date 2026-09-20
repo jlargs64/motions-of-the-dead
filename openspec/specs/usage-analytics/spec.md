@@ -29,9 +29,11 @@ The built `index.html` SHALL carry exactly one third-party script, `https://clou
 ### Requirement: A four-event allowlist over the bus
 `attachAnalytics(bus)` SHALL subscribe to exactly four `GameEvent` tags and SHALL translate them as follows, sending nothing else: `wave_start` with `n === 1` becomes `run_start` with an empty payload; `death` becomes `run_end` with `{ wave, score }`; `mission_done` becomes `mission_done` with `{ id, stars }`; `drill_done` becomes `drill_done` with `{ family, perfect, scenes }`. Every payload value SHALL be a number or a short enum string.
 
+Every event name SHALL carry a project prefix, `motd:`, built in exactly one place, so that a second project reporting to the same Umami website cannot collide with this one. The prefixed name SHALL be at most 50 characters, which is Umami's limit.
+
 #### Scenario: A full run
 - **WHEN** a player starts a run, clears four waves and dies on wave five
-- **THEN** exactly two events are sent — `run_start`, then `run_end` with that wave and score
+- **THEN** exactly two events are sent — `motd:run_start`, then `motd:run_end` with that wave and score
 
 #### Scenario: A wave that is not the first
 - **WHEN** `wave_start` fires with `n` of 3
@@ -54,7 +56,7 @@ The analytics module SHALL NOT read `localStorage`, the `motd.save` blob, the sa
 
 #### Scenario: Payload shape is asserted
 - **WHEN** `tests/analytics.test.ts` captures every sent event through a stub
-- **THEN** each payload's keys are a subset of the allowlist's fields for that event, and every value is a number or a string of at most 32 characters
+- **THEN** each payload's keys are a subset of the allowlist's fields for that event, every value is a number or a string of at most 32 characters, and every event name begins with `motd:`
 
 ### Requirement: Analytics never fails the game
 `track(name, data)` SHALL resolve `window.umami` at call time and SHALL return without effect when it is undefined, is not a function, or throws. No exception SHALL escape `src/analytics/`, and no other module SHALL import anything from it except the single wiring call in `src/main.ts`.
