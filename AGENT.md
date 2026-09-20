@@ -88,7 +88,7 @@ MENU about
 > the idea  - a shooter you edit
   the keys  - everything is Vim
   the lesson  - why it is a game
-  the build  - no assets, no network
+  the build  - no assets, no accounts
 
   The field is a text buffer read side-on: 16
   lanes, 52 columns of open ground. ...

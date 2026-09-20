@@ -1315,6 +1315,55 @@ screen. The ledger records `used` and `kills` during a drill but not
 `missed` - every scene has a known answer - and pays no medal salvage there:
 the personal best is a drill's only economy touch.
 
+## Analytics and the embed
+
+**98. The game reports to the blog's Umami website, with its own pageview off.**
+A separate website was the first choice and the account will not issue one: the
+Hobby plan answers "Website limit reached" at one site, whatever the published
+tier tables say. The objection to sharing was pollution - an iframe pageview
+double-counting every `/projects/` visit, and a session that is one URL for many
+minutes dragging the blog's bounce rate around. `data-auto-track="false"`
+removes it. The tag sends no pageview at all, only four custom events, so the
+load count stays where it already is - the blog footer's `/projects/` pageview,
+which is the truer number anyway because the iframe is lazy-loaded - and the
+game contributes nothing to the blog's page tables. The four event names are
+unambiguous the moment they appear, because the blog sends zero custom events
+today. `data-domains="justinlargo.com"` keeps dev servers, `vite preview` and
+anyone's fork silent without a build-time switch, and `data-do-not-track="true"`
+matches what the privacy policy already claims.
+
+**An allowlist, not a denylist.** `src/analytics/index.ts` subscribes to four of
+the twenty-odd `GameEvent` tags: `wave_start` at `n === 1` becomes `run_start`,
+`death` becomes `run_end` with `{ wave, score }`, `mission_done` becomes
+`{ id, stars }`, `drill_done` becomes `{ family, perfect, scenes }`. A denylist
+would have been one forgotten `bus.on` away from forwarding `kill`, `shot` or
+`command`, which fire thousands of times a run - a denial of service on my own
+dashboard. Written this way a tag added to `GameEvent` later is silent until
+someone puts it here on purpose, and `tests/analytics.test.ts` restates the
+allowlist so widening it has to be deliberate in two places. `keys`, `par`,
+`kills` and `zombieId` are dropped as noise; nothing derived from `motd.save`,
+the seed or the run log is read at all.
+
+**The no-op contract.** `src/analytics/umami.ts` is the only file that knows
+`window` exists. `track(name, data)` resolves `globalThis.umami` at call time,
+never caches it, and returns silently when it is undefined, is not a function,
+or throws. That one property covers node, `npm run play`, the four headless
+scripts, the test suite, an ad blocker, an offline player and the seconds before
+the deferred script lands. A queue that replayed events once `umami` appeared
+was considered and rejected: it puts state on the one module that must never
+fail, to recover at most one `run_start`. Wiring lives in `src/main.ts` alone,
+so `src/harness/` cannot regress into a network call by construction.
+
+**The disclaimer is Hugo content, not a game surface.** Gore, flashing, the
+analytics line and the local save are warned about in the blog's
+`content/projects.md`, above the `{{< game >}}` shortcode and therefore on
+screen before the lazy iframe is. Keeping it out of the game means no
+title-screen redesign and no fifth thing competing with `FIRST NIGHT?  G  about`.
+Someone who opens `/games/motions-of-the-dead/` directly sees no disclaimer;
+that is accepted, not solved. The about page's "the build" tab was rewritten in
+the same commit - it claimed no network calls, and that claim is retracted, as
+is README's.
+
 ## Subsystem notes
 
 Renderer-specific and audio-specific calls — glyph atlas, particle pooling,

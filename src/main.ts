@@ -20,6 +20,7 @@ import type { GameState } from './core/state';
 import { format, log } from './core/log';
 import { watch } from './core/watch';
 import { keyToken } from './ui/keys';
+import { attachAnalytics } from './analytics';
 
 const canvas = document.getElementById('screen') as HTMLCanvasElement;
 
@@ -63,6 +64,10 @@ const demo = new MissionDemo();
 // The list opens on the first mission without stars, and a mission reaching
 // DONE writes its stars and best through the one store (DECISIONS #93).
 menu.pickMission = () => firstUnstarred(store.get().missions);
+// Four events, out to Umami, from the browser entry only - `src/harness/`
+// never imports this, so the CLI and the smoke scripts cannot regress into
+// making a network call (DECISIONS #98).
+attachAnalytics(game.bus);
 game.bus.on('mission_done', (e) => recordMission(store, e.id, e.keys, e.stars));
 // The ledger screen's `1` `2` `3` start the coach's drills, and its table
 // scrolls over however many motions the save has seen (drills-and-coach D8).
