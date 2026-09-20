@@ -65,29 +65,33 @@ export class Ledger {
   }
 
   private onCommand(raw: string): void {
-    // FIRST BLOOD is the first *lifetime* press of a token, so it is judged
-    // here and not in the sim, which must not read the save (DECISIONS #71).
-    let fresh = false;
     for (const tok of tokensUsed(raw)) {
       this.usedThisRun.add(tok);
       this.runUsage.set(tok, (this.runUsage.get(tok) ?? 0) + 1);
       const m = this.data.motions[tok] ?? (this.data.motions[tok] = { used: 0, kills: 0 });
-      if (m.used === 0) fresh = true;
       m.used++;
     }
     // `motions` was mutated through the live object rather than `store.set`,
     // so the save has to be told it changed or `flush()` will skip it.
     this.store.touch();
-    // At most one per command, however many new tokens it pressed.
-    if (fresh) this.bus.emit({ t: 'medal', name: FIRST_BLOOD, bonus: STYLE_BONUS[FIRST_BLOOD] });
   }
 
   private onKill(via: string): void {
+    // FIRST BLOOD is the first *lifetime* kill made with a token, so it is
+    // judged here and not in the sim, which must not read the save
+    // (DECISIONS #71). It hangs off the kill rather than the keypress: a medal
+    // for pressing `l` to move right is not first blood by any reading, and on
+    // a fresh save the keypress rule fired on two keys in every three
+    // (DECISIONS #101).
+    let fresh = false;
     for (const tok of tokensUsed(via)) {
       const m = this.data.motions[tok] ?? (this.data.motions[tok] = { used: 0, kills: 0 });
+      if (m.kills === 0) fresh = true;
       m.kills++;
     }
     this.store.touch();
+    // At most one per kill, however many tokens drew first blood together.
+    if (fresh) this.bus.emit({ t: 'medal', name: FIRST_BLOOD, bonus: STYLE_BONUS[FIRST_BLOOD] });
   }
 
   /** What the sim's oracle comparison means for the death screen's tables. */

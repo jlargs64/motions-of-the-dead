@@ -782,23 +782,38 @@ describe('FIRST BLOOD and lifetime salvage', () => {
   }
   const cmd = (raw: string) => ({ count: 1, raw });
 
-  it('fires once on the first lifetime use of a token, and never again', () => {
+  const kill = (via: string) => ({ t: 'kill' as const, zombieId: 1, kind: 'walker' as any, via, overkill: false });
+
+  it('fires once on the first lifetime kill with a token, and never again', () => {
     const { bus, seen } = rig();
-    bus.emit({ t: 'command', cmd: cmd('fd') as any, ms: 0 });
+    bus.emit(kill('fd'));
     expect(seen).toEqual([FIRST_BLOOD]);
-    bus.emit({ t: 'command', cmd: cmd('fd') as any, ms: 0 });
+    bus.emit(kill('fd'));
     expect(seen).toEqual([FIRST_BLOOD]);
   });
 
-  it('at most one per command, however many new tokens it presses', () => {
-    const { bus, seen } = rig();
+  // The whole point of moving it off `command` (DECISIONS #101): pressing a
+  // motion is not drawing blood, and on a fresh save the keypress rule fired
+  // on two keys in every three.
+  it('never fires for a keypress that took no kill', () => {
+    const { bus, seen, store } = rig();
+    bus.emit({ t: 'command', cmd: cmd('l') as any, ms: 0 });
     bus.emit({ t: 'command', cmd: cmd('d3w') as any, ms: 0 });
+    expect(seen).toEqual([]);
+    // ...but the usage still lands, so the ledger and the coach are unaffected.
+    expect(store.get().lifetime.motions.l.used).toBe(1);
+    expect(store.get().lifetime.motions.w.used).toBe(1);
+  });
+
+  it('at most one per kill, however many new tokens it took', () => {
+    const { bus, seen } = rig();
+    bus.emit(kill('d3w'));
     expect(seen.filter((n) => n === FIRST_BLOOD)).toHaveLength(1);
   });
 
   it('pays salvage and never supplies', () => {
     const { bus, store } = rig();
-    bus.emit({ t: 'command', cmd: cmd('fd') as any, ms: 0 });
+    bus.emit(kill('fd'));
     expect(store.get().salvage).toBe(FIRST_BLOOD_SALVAGE);
     expect(store.get().lifetime.medals[FIRST_BLOOD]).toBe(1);
   });
@@ -837,8 +852,8 @@ describe('FIRST BLOOD and lifetime salvage', () => {
 
     bus.emit({ t: 'command', cmd: cmd('fd') as any, ms: 0 });
     expect(store.get().lifetime.motions.f.used).toBe(1);
-    // No medal counted and no salvage paid in a drill, so this is the only
-    // thing that can have marked the save dirty.
+    // No medal counted and no salvage paid in a drill, so the touch is the
+    // only thing that can have marked the save dirty.
     expect(store.get().lifetime.medals[FIRST_BLOOD]).toBeUndefined();
     expect(store.flush()).toBe(true);
 

@@ -1398,6 +1398,24 @@ is built, so the prefix cannot drift between the four call sites, and
 `EVENT_PREFIX` is exported for the test that asserts every sent name carries it.
 Umami allows 50 characters for a name; the longest here is 18.
 
+**101. FIRST BLOOD is earned on a kill, not on a keypress.**
+It fired on the first lifetime *use* of a token, which meant pressing `l` to
+move right earned a medal called FIRST BLOOD. Measured on a fresh save that is
+21 medals across 33 keystrokes in one drill - two keys in every three - and 9 in
+a survival run to wave 6. `CALLOUT_MAX` is 3 and `CALLOUT_MS` is 1100, so most
+of them were never even seen; they just pushed the multi-kills and the style
+medals off the band before the player could read them. The salvage was real but
+the callout was noise, and at `STYLE_BONUS` 0 it paid no score to justify the
+space.
+
+The check moved from `onCommand` to `onKill`, against `m.kills === 0` rather
+than `m.used === 0`: the first lifetime kill a token takes, at most one per
+kill however many tokens drew blood together. A drill drops to nought or two,
+a survival run to about four, and the medal means what its name says. `used` is
+still counted on every command, so the ledger's tables, the coach's `need()`
+and the death screen's "never used" list are all unchanged - only the medal
+moved.
+
 ## Subsystem notes
 
 Renderer-specific and audio-specific calls — glyph atlas, particle pooling,
